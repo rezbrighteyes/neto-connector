@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="sale_order_view_form_neto" model="ir.ui.view">
+        <field name="name">sale.order.form.neto</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+            <!-- Inject into the Sales group inside Other Info tab -->
+            <!-- Odoo 19: page name="other_information", group name="sales_person" -->
+            <group name="sales_person" position="inside">
+                <field name="neto_order_id" readonly="1" string="Neto Order ID"/>
+            </group>
+        </field>
+    </record>
+
+</odoo>

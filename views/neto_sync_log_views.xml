@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="neto_sync_log_view_list" model="ir.ui.view">
+        <field name="name">neto.sync.log.list</field>
+        <field name="model">neto.sync.log</field>
+        <field name="arch" type="xml">
+            <list string="Neto Sync Log"
+                  decoration-success="state == 'success'"
+                  decoration-warning="state == 'skipped'"
+                  decoration-danger="state == 'error'">
+                <field name="sync_date"/>
+                <field name="neto_order_id"/>
+                <field name="neto_username"/>
+                <field name="neto_grand_total" string="Grand Total"/>
+                <field name="state" widget="badge"
+                       decoration-success="state == 'success'"
+                       decoration-warning="state == 'skipped'"
+                       decoration-danger="state == 'error'"/>
+                <field name="store_id" optional="show"/>
+                <field name="skip_reason" optional="hide"/>
+                <field name="sale_order_id"/>
+                <field name="partner_id"/>
+                <field name="line_count"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="neto_sync_log_view_form" model="ir.ui.view">
+        <field name="name">neto.sync.log.form</field>
+        <field name="model">neto.sync.log</field>
+        <field name="arch" type="xml">
+            <form string="Neto Sync Log">
+                <sheet>
+                    <group>
+                        <group string="Order Info">
+                            <field name="neto_order_id"/>
+                            <field name="neto_username"/>
+                            <field name="neto_order_date"/>
+                            <field name="neto_grand_total"/>
+                            <field name="line_count"/>
+                        </group>
+                        <group string="Sync Result">
+                            <field name="store_id"/>
+                            <field name="state" widget="badge"
+                                   decoration-success="state == 'success'"
+                                   decoration-warning="state == 'skipped'"
+                                   decoration-danger="state == 'error'"/>
+                            <field name="sync_date"/>
+                            <field name="sale_order_id"/>
+                            <field name="partner_id"/>
+                            <field name="partner_created"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="skip_reason" invisible="state != 'skipped'"/>
+                        <field name="error_message" invisible="state != 'error'" widget="text"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+
+    <record id="neto_sync_log_view_graph" model="ir.ui.view">
+        <field name="name">neto.sync.log.graph</field>
+        <field name="model">neto.sync.log</field>
+        <field name="arch" type="xml">
+            <graph string="Sync Overview" type="bar">
+                <field name="state" type="row"/>
+            </graph>
+        </field>
+    </record>
+
+    <record id="neto_sync_log_view_pivot" model="ir.ui.view">
+        <field name="name">neto.sync.log.pivot</field>
+        <field name="model">neto.sync.log</field>
+        <field name="arch" type="xml">
+            <pivot string="Sync Stats">
+                <field name="store_id" type="row"/>
+                <field name="state"    type="col"/>
+            </pivot>
+        </field>
+    </record>
+
+    <record id="neto_sync_log_action" model="ir.actions.act_window">
+        <field name="name">Sync Log</field>
+        <field name="res_model">neto.sync.log</field>
+        <field name="view_mode">list,graph,pivot,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No sync runs yet.
+            </p>
+            <p>
+                Configure your Neto store credentials, then run a sync
+                or enable the scheduled job.
+            </p>
+        </field>
+    </record>
+
+</odoo>

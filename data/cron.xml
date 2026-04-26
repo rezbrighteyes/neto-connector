@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="ir_cron_neto_sync" model="ir.cron">
+        <field name="name">Neto: Sync Wholesale Orders</field>
+        <field name="model_id" ref="model_neto_sync_log"/>
+        <field name="state">code</field>
+        <field name="code">env['neto.connector'].run_sync()</field>
+        <field name="interval_number">15</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="False"/>
+    </record>
+
+</odoo>

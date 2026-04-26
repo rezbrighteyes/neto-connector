@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="res_config_settings_view_form_neto" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.neto</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base_setup.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <div class="app_settings_block"
+                     data-string="Neto Connector"
+                     data-key="Reza_neto_connector"
+                     string="Neto Connector"
+                     data-module="Reza_neto_connector">
+                    <h2>Neto Connector</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Neto Stores</span>
+                                <div class="text-muted">
+                                    Add and manage Neto store connections.
+                                    Each store syncs independently.
+                                </div>
+                                <button name="action_open_neto_stores"
+                                        type="object"
+                                        string="Manage Stores"
+                                        class="btn btn-secondary mt8"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>
