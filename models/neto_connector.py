@@ -9,6 +9,8 @@ _logger = logging.getLogger(__name__)
 
 ALLOWED_STATUSES = frozenset({'New', 'Pick', 'Pack', 'Dispatched', 'Pending', 'New Backorder'})
 _API_ACTION = 'GetOrder'
+_GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for Odoo
+_SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
 
 
 class NetoConnector(models.AbstractModel):
@@ -31,6 +33,22 @@ class NetoConnector(models.AbstractModel):
         except (ValueError, TypeError):
             return False
 
+    def _get_surcharge_product(self):
+        """Return (or create) the surcharge service product."""
+        Product = self.env['product.product'].sudo()
+        product = Product.search([('default_code', '=', _SURCHARGE_SKU)], limit=1)
+        if not product:
+            product = Product.create({
+                'name': 'Neto Order Surcharge',
+                'default_code': _SURCHARGE_SKU,
+                'type': 'service',
+                'sale_ok': True,
+                'purchase_ok': False,
+                'invoice_policy': 'order',
+            })
+            _logger.info('Neto sync: created surcharge product (SKU=%s)', _SURCHARGE_SKU)
+        return product
+
     # -------------------------------------------------------------------------
     # API
     # -------------------------------------------------------------------------
@@ -47,8 +65,10 @@ class NetoConnector(models.AbstractModel):
             'Filter': {
                 'DateUpdatedFrom': since_dt.strftime('%Y-%m-%dT%H:%M:%S'),
                 'OutputSelector': [
-                    'OrderID', 'Username', 'GrandTotal', 'OrderStatus',
-                    'OrderLine', 'BillingEmail', 'BillingName', 'BillingAddress',
+                    'OrderID', 'Username', 'GrandTotal', 'SurchargeTotal',
+                    'OrderStatus', 'OrderLine', 'OrderLine.SKU',
+                    'OrderLine.UnitPrice', 'OrderLine.Quantity',
+                    'BillingEmail', 'BillingName', 'BillingAddress',
                     'DatePlaced', 'DateUpdated',
                 ],
             }
@@ -120,7 +140,6 @@ class NetoConnector(models.AbstractModel):
             'street2': addr.get('BillStreetLine2') or addr.get('Street2') or False,
             'city':    addr.get('BillCity') or addr.get('City') or False,
             'zip':     addr.get('BillPostCode') or addr.get('PostCode') or False,
-            # mobile was removed from res.partner in Odoo 17+; phone covers both
             'phone':   addr.get('BillPhone') or addr.get('BillMobile') or addr.get('Phone') or addr.get('Mobile') or False,
         }
         country_code = addr.get('BillCountry') or addr.get('Country') or ''
@@ -186,21 +205,49 @@ class NetoConnector(models.AbstractModel):
                     sku, order_data.get('OrderID'),
                 )
                 continue
-            neto_price = float(line.get('UnitPrice') or 0)
+
+            # Neto UnitPrice is GST-inclusive — strip GST before saving to Odoo
+            neto_price_incl = float(line.get('UnitPrice') or 0)
+            neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
+
             try:
                 OrderLine.create({
                     'order_id': order.id,
                     'product_id': product.id,
                     'product_uom_qty': float(line.get('Quantity') or 1),
-                    'price_unit': neto_price,
+                    'price_unit': neto_price_excl,
                     'name': product.name,
                     'product_uom_id': product.uom_id.id,
                 })
-                line_prices[product.id] = neto_price
+                line_prices[product.id] = neto_price_excl
             except Exception as line_exc:
                 _logger.warning(
                     'Neto sync: could not create line SKU=%s on order %s — %s',
                     sku, order_data.get('OrderID'), line_exc,
+                )
+
+        # Surcharge line
+        surcharge_total = float(order_data.get('SurchargeTotal') or 0)
+        if surcharge_total > 0:
+            surcharge_product = self._get_surcharge_product()
+            surcharge_excl = round(surcharge_total / _GST_DIVISOR, 4)
+            try:
+                OrderLine.create({
+                    'order_id': order.id,
+                    'product_id': surcharge_product.id,
+                    'product_uom_qty': 1,
+                    'price_unit': surcharge_excl,
+                    'name': 'Neto Order Surcharge',
+                    'product_uom_id': surcharge_product.uom_id.id,
+                })
+                _logger.info(
+                    'Neto sync: added surcharge line $%.4f (ex-GST) on order %s',
+                    surcharge_excl, order_data.get('OrderID'),
+                )
+            except Exception as sc_exc:
+                _logger.warning(
+                    'Neto sync: could not create surcharge line on order %s — %s',
+                    order_data.get('OrderID'), sc_exc,
                 )
 
         try:
@@ -223,12 +270,7 @@ class NetoConnector(models.AbstractModel):
     # -------------------------------------------------------------------------
 
     def _process_order(self, order_data, store, synced_ids):
-        """Process a single Neto order dict.
-
-        synced_ids is a plain Python set() owned by _sync_store, passed in
-        to track duplicates within the current batch without touching self.
-        AbstractModel does not allow setting arbitrary instance attributes.
-        """
+        """Process a single Neto order dict."""
         SyncLog = self.env['neto.sync.log'].sudo()
 
         order_id = order_data.get('OrderID', '')
@@ -349,13 +391,10 @@ class NetoConnector(models.AbstractModel):
 
         store.sudo().write({'last_sync_date': fields.Datetime.now()})
 
-        # Plain local variables — AbstractModel blocks instance attribute assignment
         synced_ids = set()
-        debug_count = [0]  # [orders_logged_so_far]; mutable so _process_order can increment it
-
         _logger.info('Neto sync [%s]: %d order(s) to process', store.name, len(orders))
         for order_data in orders:
-            self._process_order(order_data, store, synced_ids, debug_count)
+            self._process_order(order_data, store, synced_ids)
             self.env.cr.commit()
 
         _logger.info('Neto sync [%s]: completed.', store.name)
