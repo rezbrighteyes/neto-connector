@@ -10,10 +10,10 @@
             <field name="name" position="before">
                 <div class="o_field_widget" invisible="not neto_order_id">
                     <span class="badge rounded-pill text-bg-info me-1"
-                          t-esc="neto_order_id"/>
+                          t-out="neto_order_id"/>
                     <span t-if="neto_order_status"
                           class="badge rounded-pill text-bg-success"
-                          t-esc="neto_order_status"/>
+                          t-out="neto_order_status"/>
                 </div>
             </field>
             <!-- Also store in Other Info for reference -->
