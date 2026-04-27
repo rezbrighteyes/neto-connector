@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="neto_sync_wizard_view_form" model="ir.ui.view">
+        <field name="name">neto.sync.wizard.form</field>
+        <field name="model">neto.sync.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Sync Single Neto Order">
+                <group>
+                    <field name="store_id"/>
+                    <field name="order_id_input" placeholder="e.g. GLE39259 or LIA00001234"/>
+                </group>
+                <footer>
+                    <button name="action_sync_order"
+                            string="Sync Order"
+                            type="object"
+                            class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="neto_sync_wizard_action" model="ir.actions.act_window">
+        <field name="name">Sync Single Order</field>
+        <field name="res_model">neto.sync.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+</odoo>
