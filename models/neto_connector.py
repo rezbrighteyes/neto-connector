@@ -20,6 +20,19 @@ _SHIPPING_SKU  = 'NETO_SHIPPING'   # internal product SKU for shipping lines
 _SKIP_SKU_PREFIXES = ('DS_',)
 _NOTE_SKU_EXACT    = frozenset({'TEXT_NOTE'})
 
+# Suffix appended to auto-created product names so they are easy to spot
+_NETO_UNSYNCED_SUFFIX = '[NETO-UNSYNCED]'
+
+# GetItem OutputSelectors we need for product creation
+_GETITEM_OUTPUT = [
+    'Name', 'Brand', 'Model',
+    'DefaultPrice', 'RRP', 'CostPrice',
+    'TaxInclusive',
+    'UPC', 'UPC1',
+    'ShippingWeight',
+    'IsActive',
+]
+
 
 class NetoConnector(models.AbstractModel):
     _name = 'neto.connector'
@@ -243,6 +256,139 @@ class NetoConnector(models.AbstractModel):
         return ship_partner
 
     # -------------------------------------------------------------------------
+    # Auto-create missing products via GetItem
+    # -------------------------------------------------------------------------
+
+    def _fetch_neto_item(self, store, sku):
+        """Call Neto GetItem for a single SKU. Returns the item dict or None."""
+        url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
+        headers = {
+            'Content-Type': 'application/json',
+            'NETOAPI_ACTION': 'GetItem',
+            'NETOAPI_KEY': store.api_key,
+            'Accept': 'application/json',
+        }
+        payload = {
+            'Filter': {
+                'SKU': [sku],
+                'OutputSelector': _GETITEM_OUTPUT,
+            }
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            _logger.warning('Neto sync: GetItem failed for SKU %s — %s', sku, exc)
+            return None
+
+        if 'GetItemResponse' in body:
+            items = body['GetItemResponse'].get('Item', [])
+        else:
+            items = body.get('Item', [])
+
+        if isinstance(items, dict):
+            items = [items]
+        items = items or []
+
+        if not items:
+            _logger.warning('Neto sync: GetItem returned no data for SKU %s', sku)
+            return None
+
+        return items[0]
+
+    def _get_or_create_product_from_neto(self, store, sku, line_data):
+        """Look up SKU in Odoo; if missing, call GetItem and create a placeholder product.
+
+        Returns (product, was_created) where was_created=True means a new product
+        was auto-created and should be flagged in the chatter.
+
+        The created product has:
+          - Name:              "{Neto Name} [NETO-UNSYNCED]"
+          - default_code:      SKU
+          - barcode:           UPC from Neto (if present)
+          - list_price:        DefaultPrice from Neto (ex-GST)
+          - standard_price:    CostPrice from Neto
+          - type:              'consu'  (consumable — no stock moves blocking confirm)
+          - sale_ok:           True
+          - active:            True
+        """
+        Product = self.env['product.product'].sudo()
+
+        # Double-check — may have been created by a parallel line on this order
+        product = Product.search([('default_code', '=', sku)], limit=1)
+        if product:
+            return product, False
+
+        # Fetch from Neto
+        item = self._fetch_neto_item(store, sku)
+
+        # Build name — fallback chain: Neto Name → line ProductName → SKU
+        if item and item.get('Name'):
+            base_name = item['Name'].strip()
+        elif line_data.get('ProductName'):
+            base_name = line_data['ProductName'].strip()
+        else:
+            base_name = sku
+
+        product_name = f"{base_name} {_NETO_UNSYNCED_SUFFIX}"
+
+        # Price — DefaultPrice from Neto is GST-inclusive when TaxInclusive=True
+        list_price = 0.0
+        if item:
+            raw_price = float(item.get('DefaultPrice') or 0)
+            tax_inclusive = str(item.get('TaxInclusive') or '').strip().lower()
+            if tax_inclusive in ('true', '1', 'yes') and raw_price:
+                list_price = round(raw_price / _GST_DIVISOR, 4)
+            elif raw_price:
+                list_price = round(raw_price, 4)
+
+        # Fallback: use the order line UnitPrice (also GST-inclusive)
+        if not list_price:
+            line_price_incl = float(line_data.get('UnitPrice') or 0)
+            list_price = round(line_price_incl / _GST_DIVISOR, 4)
+
+        cost_price = 0.0
+        if item:
+            cost_price = round(float(item.get('CostPrice') or 0), 4)
+
+        barcode = None
+        if item:
+            barcode = (item.get('UPC') or item.get('UPC1') or '').strip() or None
+
+        weight = 0.0
+        if item:
+            weight = round(float(item.get('ShippingWeight') or 0), 4)
+
+        vals = {
+            'name':          product_name,
+            'default_code':  sku,
+            'type':          'consu',
+            'sale_ok':       True,
+            'purchase_ok':   True,
+            'active':        True,
+            'list_price':    list_price,
+            'standard_price': cost_price,
+        }
+        if barcode:
+            vals['barcode'] = barcode
+        if weight:
+            vals['weight'] = weight
+
+        try:
+            product = Product.create(vals)
+            _logger.info(
+                'Neto sync: auto-created product "%s" (SKU=%s, price=%.4f, barcode=%s)',
+                product_name, sku, list_price, barcode or 'none',
+            )
+            return product, True
+        except Exception as exc:
+            _logger.warning(
+                'Neto sync: could not auto-create product SKU=%s — %s', sku, exc
+            )
+            return None, False
+
+    # -------------------------------------------------------------------------
     # API
     # -------------------------------------------------------------------------
 
@@ -436,8 +582,9 @@ class NetoConnector(models.AbstractModel):
             raw_lines = [raw_lines]
 
         line_prices = {}
-        missing_lines = []
-        note_lines = []   # TEXT_NOTE lines collected for FYI chatter section
+        missing_lines = []       # lines that could not be auto-created
+        autocreated_lines = []   # lines where product was auto-created from Neto
+        note_lines = []          # TEXT_NOTE lines collected for FYI chatter section
 
         for line in raw_lines:
             sku = (line.get('SKU') or line.get('Sku') or '').strip()
@@ -465,10 +612,19 @@ class NetoConnector(models.AbstractModel):
                 )
                 continue
 
+            # Try existing product first, then auto-create from Neto if missing
             product = Product.search([('default_code', '=', sku)], limit=1)
+            was_autocreated = False
             if not product:
+                product, was_autocreated = self._get_or_create_product_from_neto(
+                    store, sku, line
+                )
+
+            if not product:
+                # GetItem also failed — record as truly missing
                 _logger.warning(
-                    'Neto sync: SKU "%s" not found on order %s — skipping line', sku, order_id
+                    'Neto sync: SKU "%s" could not be found or created for order %s — skipping line',
+                    sku, order_id,
                 )
                 missing_lines.append({
                     'sku': sku,
@@ -477,6 +633,14 @@ class NetoConnector(models.AbstractModel):
                     'price': f"{float(line.get('UnitPrice') or 0):.2f}",
                 })
                 continue
+
+            if was_autocreated:
+                autocreated_lines.append({
+                    'sku': sku,
+                    'name': product.name,
+                    'qty': line.get('Quantity') or '',
+                    'price': f"{float(line.get('UnitPrice') or 0):.2f}",
+                })
 
             neto_price_incl = float(line.get('UnitPrice') or 0)
             neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
@@ -581,9 +745,38 @@ class NetoConnector(models.AbstractModel):
                 order.sudo().write({'date_order': date_order})
 
         # -----------------------------------------------------------------------
-        # Post chatter message — missing SKUs (warning) + TEXT_NOTE lines (FYI)
+        # Post chatter message — auto-created products (info) + missing (warning) + notes
         # -----------------------------------------------------------------------
         msg_parts = []
+
+        if autocreated_lines:
+            rows = Markup('').join(
+                Markup(
+                    '<tr style="border-bottom:1px solid #e0e0e0;">'
+                    '<td style="padding:4px 10px;font-family:monospace;">{sku}</td>'
+                    '<td style="padding:4px 10px;">{name}</td>'
+                    '<td style="padding:4px 10px;text-align:center;">{qty}</td>'
+                    '<td style="padding:4px 10px;text-align:right;">${price} '
+                    '<small style="color:#888;">(GST-inc)</small></td>'
+                    '</tr>'
+                ).format(
+                    sku=m['sku'], name=m['name'], qty=m['qty'], price=m['price'],
+                )
+                for m in autocreated_lines
+            )
+            msg_parts.append(Markup(
+                '<p>&#9989; <strong>The following products were <u>auto-created</u> from Neto '
+                '(marked <em>[NETO-UNSYNCED]</em>) and added to this order. '
+                'Please review and update them in the product catalog:</strong></p>'
+                '<table style="border-collapse:collapse;width:100%;font-size:13px;">'
+                '<thead><tr style="background:#f0fff4;font-weight:600;">'
+                '<th style="padding:5px 10px;text-align:left;">SKU</th>'
+                '<th style="padding:5px 10px;">Product Name</th>'
+                '<th style="padding:5px 10px;text-align:center;">Qty</th>'
+                '<th style="padding:5px 10px;text-align:right;">Unit Price</th>'
+                '</tr></thead>'
+                '<tbody>{rows}</tbody></table>'
+            ).format(rows=rows))
 
         if missing_lines:
             rows = Markup('').join(
@@ -601,8 +794,8 @@ class NetoConnector(models.AbstractModel):
                 for m in missing_lines
             )
             msg_parts.append(Markup(
-                '<p>&#9888;&#65039; <strong>The following Neto lines could not be matched to an '
-                'Odoo product and were <u>NOT</u> added to this order:</strong></p>'
+                '<p>&#9888;&#65039; <strong>The following Neto lines could not be matched or '
+                'created in Odoo and were <u>NOT</u> added to this order:</strong></p>'
                 '<table style="border-collapse:collapse;width:100%;font-size:13px;">'
                 '<thead><tr style="background:#f5f5f5;font-weight:600;">'
                 '<th style="padding:5px 10px;text-align:left;">SKU</th>'
