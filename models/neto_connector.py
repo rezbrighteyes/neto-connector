@@ -14,12 +14,11 @@ _GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for 
 _SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
 _SHIPPING_SKU  = 'NETO_SHIPPING'   # internal product SKU for shipping lines
 
-# Neto internal line-type prefixes / exact SKUs that should be silently dropped.
-# These are never real products in Odoo:
-#   TEXT_NOTE  — free-text note lines
-#   DS_*       — drop-ship instruction lines
+# Neto internal line-type prefixes / exact SKUs.
+#   TEXT_NOTE  — free-text note lines: collected and shown as FYI in chatter
+#   DS_*       — drop-ship instruction lines: silently dropped
 _SKIP_SKU_PREFIXES = ('DS_',)
-_SKIP_SKU_EXACT    = frozenset({'TEXT_NOTE'})
+_NOTE_SKU_EXACT    = frozenset({'TEXT_NOTE'})
 
 
 class NetoConnector(models.AbstractModel):
@@ -43,10 +42,12 @@ class NetoConnector(models.AbstractModel):
             return False
 
     def _is_internal_sku(self, sku):
-        """Return True for Neto-internal line types that should be silently skipped."""
-        if sku in _SKIP_SKU_EXACT:
-            return True
+        """Return True for DS_* drop-ship lines that should be silently skipped."""
         return any(sku.startswith(pfx) for pfx in _SKIP_SKU_PREFIXES)
+
+    def _is_note_sku(self, sku):
+        """Return True for TEXT_NOTE lines that should appear as FYI notes in chatter."""
+        return sku in _NOTE_SKU_EXACT
 
     def _get_surcharge_product(self):
         """Return (or create) the surcharge service product."""
@@ -436,6 +437,7 @@ class NetoConnector(models.AbstractModel):
 
         line_prices = {}
         missing_lines = []
+        note_lines = []   # TEXT_NOTE lines collected for FYI chatter section
 
         for line in raw_lines:
             sku = (line.get('SKU') or line.get('Sku') or '').strip()
@@ -445,7 +447,17 @@ class NetoConnector(models.AbstractModel):
                 )
                 continue
 
-            # Silently drop Neto-internal line types (TEXT_NOTE, DS_* drop-ship notes)
+            # TEXT_NOTE — collect for FYI chatter section, do not add to order lines
+            if self._is_note_sku(sku):
+                note_text = (line.get('ProductName') or '').strip()
+                _logger.info(
+                    'Neto sync: order %s — TEXT_NOTE collected for chatter: %r',
+                    order_id, note_text,
+                )
+                note_lines.append(note_text)
+                continue
+
+            # DS_* drop-ship lines — silently dropped
             if self._is_internal_sku(sku):
                 _logger.info(
                     'Neto sync: order %s — silently dropped internal SKU "%s"',
@@ -568,7 +580,11 @@ class NetoConnector(models.AbstractModel):
             if date_order:
                 order.sudo().write({'date_order': date_order})
 
-        # Post missing SKU chatter message
+        # -----------------------------------------------------------------------
+        # Post chatter message — missing SKUs (warning) + TEXT_NOTE lines (FYI)
+        # -----------------------------------------------------------------------
+        msg_parts = []
+
         if missing_lines:
             rows = Markup('').join(
                 Markup(
@@ -584,8 +600,8 @@ class NetoConnector(models.AbstractModel):
                 )
                 for m in missing_lines
             )
-            msg = Markup(
-                '<p>\u26a0\ufe0f <strong>The following Neto lines could not be matched to an '
+            msg_parts.append(Markup(
+                '<p>&#9888;&#65039; <strong>The following Neto lines could not be matched to an '
                 'Odoo product and were <u>NOT</u> added to this order:</strong></p>'
                 '<table style="border-collapse:collapse;width:100%;font-size:13px;">'
                 '<thead><tr style="background:#f5f5f5;font-weight:600;">'
@@ -595,8 +611,22 @@ class NetoConnector(models.AbstractModel):
                 '<th style="padding:5px 10px;text-align:right;">Unit Price</th>'
                 '</tr></thead>'
                 '<tbody>{rows}</tbody></table>'
-            ).format(rows=rows)
-            order.sudo().message_post(body=msg)
+            ).format(rows=rows))
+
+        if note_lines:
+            note_items = Markup('').join(
+                Markup('<li style="margin:2px 0;">{text}</li>').format(text=n)
+                for n in note_lines
+            )
+            msg_parts.append(Markup(
+                '<p style="margin-top:12px;">&#8505;&#65039; <strong>Neto order notes '
+                '(TEXT_NOTE lines — FYI only):</strong></p>'
+                '<ul style="margin:4px 0 0 16px;font-size:13px;color:#555;">'
+                '{items}</ul>'
+            ).format(items=note_items))
+
+        if msg_parts:
+            order.sudo().message_post(body=Markup('').join(msg_parts))
 
         return order, missing_lines
 
