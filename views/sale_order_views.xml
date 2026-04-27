@@ -6,15 +6,20 @@
         <field name="model">sale.order</field>
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
-            <!-- Neto badge + order ID shown at the top of the form, before the order name -->
+            <!-- Neto Order ID + Status badges in the status bar area -->
             <field name="name" position="before">
-                <div class="o_field_widget" invisible="not neto_order_id">
-                    <span class="badge rounded-pill text-bg-info me-1"
-                          t-out="neto_order_id"/>
-                    <span t-if="neto_order_status"
-                          class="badge rounded-pill text-bg-success"
-                          t-out="neto_order_status"/>
-                </div>
+                <field name="neto_order_id"
+                       readonly="1"
+                       invisible="not neto_order_id"
+                       widget="badge"
+                       decoration-info="neto_order_id != False"
+                       string="Neto Order"/>
+                <field name="neto_order_status"
+                       readonly="1"
+                       invisible="not neto_order_status"
+                       widget="badge"
+                       decoration-success="neto_order_status != False"
+                       string="Neto Status"/>
             </field>
             <!-- Also store in Other Info for reference -->
             <group name="sales_person" position="inside">
