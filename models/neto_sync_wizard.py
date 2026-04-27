@@ -7,16 +7,20 @@ from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
 
+# Must stay in sync with the OutputSelector in neto_connector.py
 _OUTPUT_SELECTOR = [
-    'OrderID', 'Username', 'Email', 'GrandTotal',
-    'ShippingTotal', 'SurchargeTotal', 'OrderStatus',
-    'CouponCode', 'CouponDiscount',
-    'OrderLine', 'OrderLine.SKU', 'OrderLine.ProductName',
-    'OrderLine.UnitPrice', 'OrderLine.Quantity',
-    'OrderLine.PercentDiscount', 'OrderLine.ProductDiscount',
-    'OrderLine.CouponDiscount',
-    'BillAddress', 'BillingEmail', 'BillingName', 'BillingAddress',
+    'OrderID', 'Username', 'Email',
+    'BillAddress',
+    'ShipAddress',
+    'GrandTotal', 'SurchargeTotal', 'ShippingTotal',
+    'OrderStatus',
+    'OrderLine', 'OrderLine.SKU',
+    'OrderLine.ProductName', 'OrderLine.UnitPrice',
+    'OrderLine.Quantity', 'OrderLine.PercentDiscount',
+    'OrderLine.ProductDiscount',
     'DatePlaced', 'DateUpdated',
+    'DatePaid',
+    'OrderPayment',
 ]
 
 
@@ -32,7 +36,14 @@ class NetoSyncWizard(models.TransientModel):
     # --- Single order mode ---
     order_id_input = fields.Char(
         string='Neto Order ID',
-        help='The Neto order number, e.g. GLE39259 or LIA00001234. Leave blank to use date range.',
+        help='The Neto order number, e.g. GLE39259 or LIA36217. Leave blank to use date range.',
+    )
+    force_resync = fields.Boolean(
+        string='Force Re-sync',
+        default=False,
+        help='If the order already exists in Odoo, patch its Neto fields '
+             '(Date Paid, Payment Method, Delivery Address) from the latest API data '
+             'without creating a duplicate.',
     )
     # --- Date range mode ---
     date_from = fields.Datetime(
@@ -64,16 +75,8 @@ class NetoSyncWizard(models.TransientModel):
         else:
             raise UserError(_('Please enter a Neto Order ID or set a Date From for date range sync.'))
 
-    def _sync_single_order(self, store, order_id):
-        # Check if already synced
-        existing = self.env['sale.order'].sudo().search(
-            [('neto_order_id', '=', order_id)], limit=1
-        )
-        if existing:
-            raise UserError(
-                _('Order %s has already been synced — see %s.') % (order_id, existing.name)
-            )
-
+    def _fetch_raw_order(self, store, order_id):
+        """Call Neto API for a single order by ID. Returns the raw order dict or raises UserError."""
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -87,7 +90,6 @@ class NetoSyncWizard(models.TransientModel):
                 'OutputSelector': _OUTPUT_SELECTOR,
             }
         }
-
         _logger.info('Neto single-order sync [%s]: fetching order %s', store.name, order_id)
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
@@ -109,10 +111,77 @@ class NetoSyncWizard(models.TransientModel):
             raise UserError(
                 _('Order %s not found in Neto store "%s".') % (order_id, store.name)
             )
+        return orders[0]
 
+    def _patch_existing_order(self, sale_order, order_data):
+        """Patch Neto-sourced fields on an existing SO without touching order lines.
+
+        Updates: neto_date_paid, neto_payment_method, partner_shipping_id.
+        Safe to run on confirmed/locked orders.
+        """
+        connector = self.env['neto.connector']
+
+        # DatePaid
+        date_paid = connector._parse_neto_datetime(order_data.get('DatePaid'))
+
+        # Payment method
+        payments = order_data.get('OrderPayment', []) or []
+        if isinstance(payments, dict):
+            payments = [payments]
+        payment_method = (payments[0].get('PaymentType') or '').strip() if payments else ''
+
+        # Shipping address
+        ship_partner = connector._get_or_create_ship_address(
+            sale_order.partner_id, order_data
+        )
+
+        write_vals = {}
+        if date_paid and 'neto_date_paid' in self.env['sale.order']._fields:
+            write_vals['neto_date_paid'] = date_paid
+        if payment_method and 'neto_payment_method' in self.env['sale.order']._fields:
+            write_vals['neto_payment_method'] = payment_method
+        if ship_partner:
+            write_vals['partner_shipping_id'] = ship_partner.id
+
+        if write_vals:
+            sale_order.sudo().write(write_vals)
+            _logger.info(
+                'Neto re-sync: patched order %s — fields updated: %s',
+                sale_order.name, list(write_vals.keys()),
+            )
+        return write_vals
+
+    def _sync_single_order(self, store, order_id):
+        existing = self.env['sale.order'].sudo().search(
+            [('neto_order_id', '=', order_id)], limit=1
+        )
+
+        if existing and not self.force_resync:
+            raise UserError(
+                _('Order %s has already been synced — see %s.\n\n'
+                  'Tick "Force Re-sync" to patch its Neto fields (Date Paid, '
+                  'Payment Method, Delivery Address) from the latest API data.')
+                % (order_id, existing.name)
+            )
+
+        order_data = self._fetch_raw_order(store, order_id)
+
+        if existing and self.force_resync:
+            # Patch only — don't create a duplicate
+            patched = self._patch_existing_order(existing, order_data)
+            self.env.cr.commit()
+            return {
+                'type': 'ir.actions.act_window',
+                'res_model': 'sale.order',
+                'res_id': existing.id,
+                'view_mode': 'form',
+                'target': 'current',
+            }
+
+        # New order — full sync
         connector = self.env['neto.connector']
         synced_ids = set()
-        connector._process_order(orders[0], store, synced_ids)
+        connector._process_order(order_data, store, synced_ids)
         self.env.cr.commit()
 
         sale_order = self.env['sale.order'].sudo().search(
@@ -142,7 +211,6 @@ class NetoSyncWizard(models.TransientModel):
             }
 
     def _sync_date_range(self, store, date_from, date_to):
-        # Convert naive Odoo datetimes to UTC-aware
         since_dt = date_from.replace(tzinfo=timezone.utc)
         until_dt = date_to.replace(tzinfo=timezone.utc) if date_to else None
 
