@@ -12,7 +12,6 @@ ALLOWED_STATUSES = frozenset({'New', 'Pick', 'Pack', 'Dispatched', 'Pending', 'N
 _API_ACTION = 'GetOrder'
 _GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for Odoo
 _SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
-_COUPON_SKU    = 'NETO-COUPON'     # internal product SKU for coupon/voucher discount lines
 
 
 class NetoConnector(models.AbstractModel):
@@ -51,22 +50,6 @@ class NetoConnector(models.AbstractModel):
             _logger.info('Neto sync: created surcharge product (SKU=%s)', _SURCHARGE_SKU)
         return product
 
-    def _get_coupon_product(self):
-        """Return (or create) the coupon/discount service product."""
-        Product = self.env['product.product'].sudo()
-        product = Product.search([('default_code', '=', _COUPON_SKU)], limit=1)
-        if not product:
-            product = Product.create({
-                'name': 'Neto Coupon / Discount',
-                'default_code': _COUPON_SKU,
-                'type': 'service',
-                'sale_ok': True,
-                'purchase_ok': False,
-                'invoice_policy': 'order',
-            })
-            _logger.info('Neto sync: created coupon product (SKU=%s)', _COUPON_SKU)
-        return product
-
     # -------------------------------------------------------------------------
     # API
     # -------------------------------------------------------------------------
@@ -90,11 +73,10 @@ class NetoConnector(models.AbstractModel):
                 **date_filter,
                 'OutputSelector': [
                     'OrderID', 'Username', 'GrandTotal', 'SurchargeTotal',
-                    'CouponCode', 'CouponDiscount',
                     'OrderStatus', 'OrderLine', 'OrderLine.SKU',
                     'OrderLine.ProductName', 'OrderLine.UnitPrice',
                     'OrderLine.Quantity', 'OrderLine.PercentDiscount',
-                    'OrderLine.ProductDiscount', 'OrderLine.CouponDiscount',
+                    'OrderLine.ProductDiscount',
                     'BillingEmail', 'BillingName',
                     'BillingAddress', 'DatePlaced', 'DateUpdated',
                 ],
@@ -114,7 +96,7 @@ class NetoConnector(models.AbstractModel):
             response.raise_for_status()
         except requests.exceptions.RequestException as exc:
             _logger.error(
-                'Neto sync [%s]: API request failed — %s', store.name, exc
+                'Neto sync [%s]: API request failed \u2014 %s', store.name, exc
             )
             return []
 
@@ -122,7 +104,7 @@ class NetoConnector(models.AbstractModel):
             body = response.json()
         except Exception as exc:
             _logger.error(
-                'Neto sync [%s]: could not parse JSON response — %s\nRaw: %s',
+                'Neto sync [%s]: could not parse JSON response \u2014 %s\nRaw: %s',
                 store.name, exc, response.text[:500],
             )
             return []
@@ -226,14 +208,14 @@ class NetoConnector(models.AbstractModel):
             sku = (line.get('SKU') or line.get('Sku') or '').strip()
             if not sku:
                 _logger.warning(
-                    'Neto sync: order %s has a line with no SKU — skipping line',
+                    'Neto sync: order %s has a line with no SKU \u2014 skipping line',
                     order_data.get('OrderID'),
                 )
                 continue
             product = Product.search([('default_code', '=', sku)], limit=1)
             if not product:
                 _logger.warning(
-                    'Neto sync: SKU "%s" not found on order %s — skipping line',
+                    'Neto sync: SKU "%s" not found on order %s \u2014 skipping line',
                     sku, order_data.get('OrderID'),
                 )
                 missing_lines.append({
@@ -249,7 +231,9 @@ class NetoConnector(models.AbstractModel):
             neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
 
             # Line-level discount: prefer PercentDiscount; fall back to
-            # ProductDiscount (dollar amount) converted to a percentage
+            # ProductDiscount (dollar amount) converted to a percentage.
+            # Note: CouponDiscount at the order level is just the sum of these
+            # line discounts — do NOT add a separate negative line for it.
             percent_discount = float(line.get('PercentDiscount') or 0)
             if not percent_discount:
                 product_discount_amt = float(line.get('ProductDiscount') or 0)
@@ -271,11 +255,11 @@ class NetoConnector(models.AbstractModel):
                 line_prices[product.id] = (neto_price_excl, percent_discount)
             except Exception as line_exc:
                 _logger.warning(
-                    'Neto sync: could not create line SKU=%s on order %s — %s',
+                    'Neto sync: could not create line SKU=%s on order %s \u2014 %s',
                     sku, order_data.get('OrderID'), line_exc,
                 )
 
-        # Surcharge line
+        # Surcharge line — this IS a real additional charge, not covered by line discounts
         surcharge_total = float(order_data.get('SurchargeTotal') or 0)
         if surcharge_total > 0:
             surcharge_product = self._get_surcharge_product()
@@ -295,33 +279,8 @@ class NetoConnector(models.AbstractModel):
                 )
             except Exception as sc_exc:
                 _logger.warning(
-                    'Neto sync: could not create surcharge line on order %s — %s',
+                    'Neto sync: could not create surcharge line on order %s \u2014 %s',
                     order_data.get('OrderID'), sc_exc,
-                )
-
-        # Order-level coupon/voucher discount (negative line)
-        coupon_discount = float(order_data.get('CouponDiscount') or 0)
-        if coupon_discount > 0:
-            coupon_product = self._get_coupon_product()
-            coupon_excl = round(coupon_discount / _GST_DIVISOR, 4)
-            coupon_code = order_data.get('CouponCode') or 'Coupon'
-            try:
-                OrderLine.create({
-                    'order_id': order.id,
-                    'product_id': coupon_product.id,
-                    'product_uom_qty': 1,
-                    'price_unit': -coupon_excl,  # negative to reduce order total
-                    'name': f'Neto Coupon Discount ({coupon_code})',
-                    'product_uom_id': coupon_product.uom_id.id,
-                })
-                _logger.info(
-                    'Neto sync: added coupon discount line -$%.4f (ex-GST) [%s] on order %s',
-                    coupon_excl, coupon_code, order_data.get('OrderID'),
-                )
-            except Exception as cp_exc:
-                _logger.warning(
-                    'Neto sync: could not create coupon line on order %s — %s',
-                    order_data.get('OrderID'), cp_exc,
                 )
 
         # Confirm order — wrapped safely; staging env may lack stock.move.group_id
@@ -350,7 +309,7 @@ class NetoConnector(models.AbstractModel):
                 order.sudo().write({'date_order': date_order})
         except Exception as confirm_exc:
             _logger.warning(
-                'Neto sync: order %s created as draft — action_confirm() failed: %s',
+                'Neto sync: order %s created as draft \u2014 action_confirm() failed: %s',
                 order_data.get('OrderID'), confirm_exc,
             )
 
@@ -416,7 +375,7 @@ class NetoConnector(models.AbstractModel):
         }
 
         try:
-            # Rule 3: duplicate — silent, no log entry
+            # Rule 3: duplicate \u2014 silent, no log entry
             if order_id in synced_ids:
                 return
             if self.env['sale.order'].sudo().search_count(
@@ -494,7 +453,7 @@ class NetoConnector(models.AbstractModel):
     def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None):
         if not store.api_key or not store.store_url:
             _logger.warning(
-                'Neto connector: store "%s" missing api_key or store_url — skipping.',
+                'Neto connector: store "%s" missing api_key or store_url \u2014 skipping.',
                 store.name,
             )
             return
@@ -518,7 +477,7 @@ class NetoConnector(models.AbstractModel):
             orders = self._fetch_orders(store, since_dt, until_dt=until_dt)
         except Exception as exc:
             _logger.error(
-                'Neto sync [%s]: _fetch_orders raised unexpectedly — %s', store.name, exc
+                'Neto sync [%s]: _fetch_orders raised unexpectedly \u2014 %s', store.name, exc
             )
             return
 
@@ -538,15 +497,15 @@ class NetoConnector(models.AbstractModel):
 
     def run_sync(self, hours_back=None):
         stores = self.env['neto.store'].sudo().search([('active', '=', True)])
-        _logger.info('Neto connector: run_sync called — %d active store(s) found', len(stores))
+        _logger.info('Neto connector: run_sync called \u2014 %d active store(s) found', len(stores))
         if not stores:
-            _logger.warning('Neto connector: no active stores configured — aborting sync.')
+            _logger.warning('Neto connector: no active stores configured \u2014 aborting sync.')
             return
         for store in stores:
             try:
                 self._sync_store(store, hours_back=hours_back)
             except Exception as exc:
                 _logger.exception(
-                    'Neto connector: _sync_store failed for store "%s" — %s',
+                    'Neto connector: _sync_store failed for store "%s" \u2014 %s',
                     store.name, exc,
                 )
