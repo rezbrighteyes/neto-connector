@@ -32,14 +32,14 @@
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"
               parent="menu_neto_sync_root"
-              action="neto_sync_wizard_views.neto_sync_wizard_action"
+              action="neto_sync_wizard_action"
               sequence="20"/>
 
     <!-- Sync Single Order: opens single-order wizard (admin only) -->
     <menuitem id="menu_neto_sync_single_order"
               name="Sync Single Order"
               parent="menu_neto_sync_root"
-              action="neto_sync_wizard_views.neto_sync_wizard_action_single"
+              action="neto_sync_wizard_action_single"
               groups="base.group_system"
               sequence="25"/>
 
