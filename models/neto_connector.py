@@ -14,6 +14,13 @@ _GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for 
 _SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
 _SHIPPING_SKU  = 'NETO_SHIPPING'   # internal product SKU for shipping lines
 
+# Neto internal line-type prefixes / exact SKUs that should be silently dropped.
+# These are never real products in Odoo:
+#   TEXT_NOTE  — free-text note lines
+#   DS_*       — drop-ship instruction lines
+_SKIP_SKU_PREFIXES = ('DS_',)
+_SKIP_SKU_EXACT    = frozenset({'TEXT_NOTE'})
+
 
 class NetoConnector(models.AbstractModel):
     _name = 'neto.connector'
@@ -34,6 +41,12 @@ class NetoConnector(models.AbstractModel):
             return dt
         except (ValueError, TypeError):
             return False
+
+    def _is_internal_sku(self, sku):
+        """Return True for Neto-internal line types that should be silently skipped."""
+        if sku in _SKIP_SKU_EXACT:
+            return True
+        return any(sku.startswith(pfx) for pfx in _SKIP_SKU_PREFIXES)
 
     def _get_surcharge_product(self):
         """Return (or create) the surcharge service product."""
@@ -63,12 +76,13 @@ class NetoConnector(models.AbstractModel):
             )
         return product
 
-    def _fetch_payment_method(self, store, order_id):
-        """Call GetPayment API for an order and return PaymentMethodName string.
+    def _fetch_payment_method(self, store, order_id, order_data=None):
+        """Return the payment method string for an order.
 
-        GetOrder's OrderPayment block only returns Amount/Id/DatePaid — it does NOT
-        include PaymentMethod or PaymentMethodName.  We must call the separate
-        GetPayment endpoint filtered by OrderID to get that data.
+        Strategy:
+        1. Call GetPayment — works for gateway-paid orders (credit card, PayPal, etc.)
+        2. If GetPayment returns no records (account/wholesale/EFT orders), fall back
+           to the PaymentMethod field on the GetOrder response itself.
 
         Returns empty string on any error so the sync never fails because of this.
         Ref: https://developers.maropost.com/documentation/engineers/api-documentation/payments/getpayment
@@ -97,7 +111,7 @@ class NetoConnector(models.AbstractModel):
             _logger.warning(
                 'Neto sync: GetPayment failed for order %s — %s', order_id, exc
             )
-            return ''
+            return self._payment_method_from_order(order_data, order_id)
 
         # Always log the raw body at INFO level so we can diagnose filter issues
         _logger.info(
@@ -115,12 +129,12 @@ class NetoConnector(models.AbstractModel):
         payments = payments or []
 
         if not payments:
-            _logger.warning(
-                'Neto sync: GetPayment returned no Payment records for order %s '
-                '(check OrderID filter — raw body logged above)',
+            _logger.info(
+                'Neto sync: GetPayment returned no records for order %s '
+                '— falling back to GetOrder PaymentMethod field',
                 order_id,
             )
-            return ''
+            return self._payment_method_from_order(order_data, order_id)
 
         method = (payments[0].get('PaymentMethodName') or payments[0].get('PaymentMethod') or '').strip()
         _logger.info(
@@ -129,6 +143,27 @@ class NetoConnector(models.AbstractModel):
             payments[0].get('PaymentMethodName'),
             payments[0].get('PaymentMethod'),
         )
+        return method
+
+    def _payment_method_from_order(self, order_data, order_id):
+        """Extract PaymentMethod directly from the GetOrder response dict.
+
+        Neto includes a top-level PaymentMethod key on every order.  This is
+        the correct fallback for account/wholesale customers who pay by EFT or
+        on terms and therefore have no GetPayment record at order time.
+        """
+        if not order_data:
+            return ''
+        method = (order_data.get('PaymentMethod') or '').strip()
+        if method:
+            _logger.info(
+                'Neto sync: order %s PaymentMethod from GetOrder = %r', order_id, method
+            )
+        else:
+            _logger.info(
+                'Neto sync: order %s has no PaymentMethod in GetOrder response either',
+                order_id,
+            )
         return method
 
     def _get_or_create_ship_address(self, partner, order_data):
@@ -233,6 +268,9 @@ class NetoConnector(models.AbstractModel):
                     'ShipAddress',
                     'GrandTotal', 'SurchargeTotal', 'ShippingTotal',
                     'OrderStatus',
+                    # PaymentMethod on GetOrder is the fallback for account/EFT orders
+                    # that have no GetPayment record (Liaise International wholesale)
+                    'PaymentMethod',
                     'OrderLine', 'OrderLine.SKU',
                     'OrderLine.ProductName', 'OrderLine.UnitPrice',
                     'OrderLine.Quantity', 'OrderLine.PercentDiscount',
@@ -368,8 +406,8 @@ class NetoConnector(models.AbstractModel):
         # --- DatePaid (top-level on GetOrder response) ---
         date_paid = self._parse_neto_datetime(order_data.get('DatePaid'))
 
-        # --- Payment method via separate GetPayment API call ---
-        payment_method = self._fetch_payment_method(store, order_id)
+        # --- Payment method: GetPayment first, fall back to GetOrder PaymentMethod ---
+        payment_method = self._fetch_payment_method(store, order_id, order_data=order_data)
 
         # --- Shipping delivery address child partner ---
         ship_partner = self._get_or_create_ship_address(partner, order_data)
@@ -406,6 +444,15 @@ class NetoConnector(models.AbstractModel):
                     'Neto sync: order %s has a line with no SKU — skipping line', order_id
                 )
                 continue
+
+            # Silently drop Neto-internal line types (TEXT_NOTE, DS_* drop-ship notes)
+            if self._is_internal_sku(sku):
+                _logger.info(
+                    'Neto sync: order %s — silently dropped internal SKU "%s"',
+                    order_id, sku,
+                )
+                continue
+
             product = Product.search([('default_code', '=', sku)], limit=1)
             if not product:
                 _logger.warning(
@@ -496,7 +543,8 @@ class NetoConnector(models.AbstractModel):
                         order_id, sh_exc,
                     )
 
-        # Confirm order
+        # Confirm order — catch broadly so staging-only issues (stock.move, group_id, etc.)
+        # leave the order as a clean draft rather than raising noisy tracebacks.
         try:
             order.action_confirm()
             for ol in order.order_line:
@@ -512,18 +560,13 @@ class NetoConnector(models.AbstractModel):
                         ol.sudo().write(writes)
             if date_order:
                 order.sudo().write({'date_order': date_order})
-        except AttributeError as ae:
+        except Exception as confirm_exc:
             _logger.info(
                 'Neto sync: order %s left as draft (action_confirm skipped: %s)',
-                order_id, ae,
+                order_id, confirm_exc,
             )
             if date_order:
                 order.sudo().write({'date_order': date_order})
-        except Exception as confirm_exc:
-            _logger.warning(
-                'Neto sync: order %s created as draft — action_confirm() failed: %s',
-                order_id, confirm_exc,
-            )
 
         # Post missing SKU chatter message
         if missing_lines:
