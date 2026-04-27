@@ -10,8 +10,11 @@ _logger = logging.getLogger(__name__)
 _OUTPUT_SELECTOR = [
     'OrderID', 'Username', 'Email', 'GrandTotal',
     'ShippingTotal', 'SurchargeTotal', 'OrderStatus',
+    'CouponCode', 'CouponDiscount',
     'OrderLine', 'OrderLine.SKU', 'OrderLine.ProductName',
     'OrderLine.UnitPrice', 'OrderLine.Quantity',
+    'OrderLine.PercentDiscount', 'OrderLine.ProductDiscount',
+    'OrderLine.CouponDiscount',
     'BillAddress', 'BillingEmail', 'BillingName', 'BillingAddress',
     'DatePlaced', 'DateUpdated',
 ]
