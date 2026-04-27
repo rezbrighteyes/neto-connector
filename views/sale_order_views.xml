@@ -7,7 +7,7 @@
         <field name="model">sale.order</field>
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
-            <!-- Neto badges inside the header statusbar, before the status buttons -->
+            <!-- Neto badges inside the header statusbar -->
             <xpath expr="//header" position="inside">
                 <field name="neto_order_id"
                        readonly="1"
@@ -24,15 +24,19 @@
                        decoration-danger="neto_order_status == 'Cancelled'"
                        string=""/>
             </xpath>
-            <!-- Neto fields in Other Info tab for reference -->
+            <!-- Neto fields in Other Info tab -->
             <group name="sales_person" position="inside">
-                <field name="neto_order_id" readonly="1" string="Neto Order ID"/>
-                <field name="neto_order_status" readonly="1" string="Neto Status"/>
+                <field name="neto_order_id"      readonly="1" string="Neto Order ID"/>
+                <field name="neto_order_status"  readonly="1" string="Neto Status"/>
+                <field name="neto_date_paid"     readonly="1" string="Date Paid"
+                       invisible="not neto_date_paid"/>
+                <field name="neto_payment_method" readonly="1" string="Payment Method"
+                       invisible="not neto_payment_method"/>
             </group>
         </field>
     </record>
 
-    <!-- List view: add Neto Order ID + Date columns after the order number -->
+    <!-- List view: Neto Order ID, Date Paid, Payment Method -->
     <record id="sale_order_view_list_neto" model="ir.ui.view">
         <field name="name">sale.order.list.neto</field>
         <field name="model">sale.order</field>
@@ -45,6 +49,14 @@
                        readonly="1"/>
                 <field name="date_order"
                        string="Order Date"
+                       optional="show"
+                       readonly="1"/>
+                <field name="neto_date_paid"
+                       string="Date Paid"
+                       optional="show"
+                       readonly="1"/>
+                <field name="neto_payment_method"
+                       string="Payment Method"
                        optional="show"
                        readonly="1"/>
             </xpath>
