@@ -83,7 +83,10 @@ class NetoConnector(models.AbstractModel):
         payload = {
             'Filter': {
                 'OrderID': [order_id],
-                'OutputSelector': ['PaymentMethodName'],
+                'OutputSelector': [
+                    'ID', 'PaymentMethod', 'PaymentMethodName',
+                    'AmountPaid', 'DatePaid',
+                ],
             }
         }
         try:
@@ -96,6 +99,12 @@ class NetoConnector(models.AbstractModel):
             )
             return ''
 
+        # Always log the raw body at INFO level so we can diagnose filter issues
+        _logger.info(
+            'Neto sync: GetPayment raw response for order %s: %s',
+            order_id, str(body)[:2000],
+        )
+
         if 'GetPaymentResponse' in body:
             payments = body['GetPaymentResponse'].get('Payment', [])
         else:
@@ -106,14 +115,19 @@ class NetoConnector(models.AbstractModel):
         payments = payments or []
 
         if not payments:
-            _logger.info(
-                'Neto sync: GetPayment returned no records for order %s', order_id
+            _logger.warning(
+                'Neto sync: GetPayment returned no Payment records for order %s '
+                '(check OrderID filter — raw body logged above)',
+                order_id,
             )
             return ''
 
-        method = (payments[0].get('PaymentMethodName') or '').strip()
+        method = (payments[0].get('PaymentMethodName') or payments[0].get('PaymentMethod') or '').strip()
         _logger.info(
-            'Neto sync: GetPayment order %s — PaymentMethodName=%r', order_id, method
+            'Neto sync: GetPayment order %s — PaymentMethodName=%r  PaymentMethod=%r',
+            order_id,
+            payments[0].get('PaymentMethodName'),
+            payments[0].get('PaymentMethod'),
         )
         return method
 
