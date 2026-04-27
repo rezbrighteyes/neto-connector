@@ -63,6 +63,60 @@ class NetoConnector(models.AbstractModel):
             )
         return product
 
+    def _fetch_payment_method(self, store, order_id):
+        """Call GetPayment API for an order and return PaymentMethodName string.
+
+        GetOrder's OrderPayment block only returns Amount/Id/DatePaid — it does NOT
+        include PaymentMethod or PaymentMethodName.  We must call the separate
+        GetPayment endpoint filtered by OrderID to get that data.
+
+        Returns empty string on any error so the sync never fails because of this.
+        Ref: https://developers.maropost.com/documentation/engineers/api-documentation/payments/getpayment
+        """
+        url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
+        headers = {
+            'Content-Type': 'application/json',
+            'NETOAPI_ACTION': 'GetPayment',
+            'NETOAPI_KEY': store.api_key,
+            'Accept': 'application/json',
+        }
+        payload = {
+            'Filter': {
+                'OrderID': [order_id],
+                'OutputSelector': ['PaymentMethodName'],
+            }
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            _logger.warning(
+                'Neto sync: GetPayment failed for order %s — %s', order_id, exc
+            )
+            return ''
+
+        if 'GetPaymentResponse' in body:
+            payments = body['GetPaymentResponse'].get('Payment', [])
+        else:
+            payments = body.get('Payment', [])
+
+        if isinstance(payments, dict):
+            payments = [payments]
+        payments = payments or []
+
+        if not payments:
+            _logger.info(
+                'Neto sync: GetPayment returned no records for order %s', order_id
+            )
+            return ''
+
+        method = (payments[0].get('PaymentMethodName') or '').strip()
+        _logger.info(
+            'Neto sync: GetPayment order %s — PaymentMethodName=%r', order_id, method
+        )
+        return method
+
     def _get_or_create_ship_address(self, partner, order_data):
         """Return a child delivery address partner for this order's ShipAddress fields.
 
@@ -88,7 +142,6 @@ class NetoConnector(models.AbstractModel):
         country_raw = (order_data.get('ShipCountry') or 'AU').strip()
         phone   = (order_data.get('ShipPhone')     or '').strip()
 
-        # Display name: prefer company, then full name, then parent name
         if company:
             display_name = company
         elif first or last:
@@ -96,14 +149,12 @@ class NetoConnector(models.AbstractModel):
         else:
             display_name = partner.name
 
-        # Resolve country
         country = self.env['res.country'].sudo().search(
             ['|', ('code', '=ilike', country_raw),
                   ('name', '=ilike', country_raw)], limit=1
         )
         country_id = country.id if country else False
 
-        # Resolve state
         state_id = False
         if country and state:
             state_rec = self.env['res.country.state'].sudo().search(
@@ -113,7 +164,6 @@ class NetoConnector(models.AbstractModel):
             )
             state_id = state_rec.id if state_rec else False
 
-        # Try to find an existing matching delivery address child of this partner
         existing = Partner.search([
             ('parent_id', '=', partner.id),
             ('type', '=', 'delivery'),
@@ -163,17 +213,6 @@ class NetoConnector(models.AbstractModel):
         payload = {
             'Filter': {
                 **date_filter,
-                # Neto GetOrder OutputSelector reference:
-                # https://developers.maropost.com/documentation/engineers/api-documentation/orders-invoices/getorder
-                #
-                # BillAddress / ShipAddress are top-level selectors — Neto returns
-                # billing/shipping fields flat on the order object (e.g. BillFirstName,
-                # ShipStreetLine1, etc.).  There are NO sub-selectors like
-                # BillAddress.BillCity or ShipAddress.ShipCity.
-                #
-                # OrderPayment is an array of payment records; we use the first entry's
-                # PaymentType.  It may arrive as a dict (single payment) — always
-                # normalise to list.
                 'OutputSelector': [
                     'OrderID', 'Username', 'Email',
                     'BillAddress',
@@ -186,7 +225,6 @@ class NetoConnector(models.AbstractModel):
                     'OrderLine.ProductDiscount',
                     'DatePlaced', 'DateUpdated',
                     'DatePaid',
-                    'OrderPayment',
                 ],
             }
         }
@@ -204,7 +242,7 @@ class NetoConnector(models.AbstractModel):
             response.raise_for_status()
         except requests.exceptions.RequestException as exc:
             _logger.error(
-                'Neto sync [%s]: API request failed \u2014 %s', store.name, exc
+                'Neto sync [%s]: API request failed — %s', store.name, exc
             )
             return []
 
@@ -212,7 +250,7 @@ class NetoConnector(models.AbstractModel):
             body = response.json()
         except Exception as exc:
             _logger.error(
-                'Neto sync [%s]: could not parse JSON response \u2014 %s\nRaw: %s',
+                'Neto sync [%s]: could not parse JSON response — %s\nRaw: %s',
                 store.name, exc, response.text[:500],
             )
             return []
@@ -240,21 +278,12 @@ class NetoConnector(models.AbstractModel):
     # -------------------------------------------------------------------------
 
     def _get_or_create_partner(self, username, order_data):
-        """Find partner by neto_username or create one from the order's billing fields.
-
-        Neto returns billing data as flat top-level keys on the order object when
-        the 'BillAddress' and 'Email' OutputSelectors are requested:
-            BillFirstName, BillLastName, BillCompany,
-            BillStreetLine1, BillStreetLine2,
-            BillCity, BillState, BillPostCode, BillCountry, BillPhone
-        There is no nested BillingAddress dict.
-        """
+        """Find partner by neto_username or create one from the order's billing fields."""
         Partner = self.env['res.partner'].sudo()
         partner = Partner.search([('neto_username', '=', username)], limit=1)
         if partner:
             return partner, False
 
-        # Build display name: prefer company, then first+last, then username
         first = (order_data.get('BillFirstName') or '').strip()
         last  = (order_data.get('BillLastName') or '').strip()
         company = (order_data.get('BillCompany') or '').strip()
@@ -315,19 +344,18 @@ class NetoConnector(models.AbstractModel):
         OrderLine = self.env['sale.order.line'].sudo()
         Product = self.env['product.product'].sudo()
 
+        order_id = order_data.get('OrderID', '')
+
         date_order = (
             self._parse_neto_datetime(order_data.get('DatePlaced'))
             or fields.Datetime.now()
         )
 
-        # --- DatePaid ---
+        # --- DatePaid (top-level on GetOrder response) ---
         date_paid = self._parse_neto_datetime(order_data.get('DatePaid'))
 
-        # --- Payment method: normalise OrderPayment to list, use first entry ---
-        payments = order_data.get('OrderPayment', []) or []
-        if isinstance(payments, dict):
-            payments = [payments]
-        payment_method = (payments[0].get('PaymentType') or '').strip() if payments else ''
+        # --- Payment method via separate GetPayment API call ---
+        payment_method = self._fetch_payment_method(store, order_id)
 
         # --- Shipping delivery address child partner ---
         ship_partner = self._get_or_create_ship_address(partner, order_data)
@@ -337,14 +365,12 @@ class NetoConnector(models.AbstractModel):
         order_vals = {
             'partner_id':           partner.id,
             'partner_shipping_id':  ship_partner.id,
-            'neto_order_id':        order_data.get('OrderID'),
+            'neto_order_id':        order_id,
             'neto_order_status':    order_status,
             'date_order':           date_order,
             'warehouse_id':         store.warehouse_id.id,
             'company_id':           store.company_id.id,
         }
-        # Write DatePaid / PaymentMethod only if the fields exist on sale.order
-        # (they are added by this module's sale_order.py extension)
         if date_paid and 'neto_date_paid' in self.env['sale.order']._fields:
             order_vals['neto_date_paid'] = date_paid
         if payment_method and 'neto_payment_method' in self.env['sale.order']._fields:
@@ -356,22 +382,20 @@ class NetoConnector(models.AbstractModel):
         if isinstance(raw_lines, dict):
             raw_lines = [raw_lines]
 
-        line_prices = {}   # product_id -> (price_excl, discount_pct)
-        missing_lines = []  # collect unmatched SKUs for chatter
+        line_prices = {}
+        missing_lines = []
 
         for line in raw_lines:
             sku = (line.get('SKU') or line.get('Sku') or '').strip()
             if not sku:
                 _logger.warning(
-                    'Neto sync: order %s has a line with no SKU \u2014 skipping line',
-                    order_data.get('OrderID'),
+                    'Neto sync: order %s has a line with no SKU — skipping line', order_id
                 )
                 continue
             product = Product.search([('default_code', '=', sku)], limit=1)
             if not product:
                 _logger.warning(
-                    'Neto sync: SKU "%s" not found on order %s \u2014 skipping line',
-                    sku, order_data.get('OrderID'),
+                    'Neto sync: SKU "%s" not found on order %s — skipping line', sku, order_id
                 )
                 missing_lines.append({
                     'sku': sku,
@@ -381,12 +405,9 @@ class NetoConnector(models.AbstractModel):
                 })
                 continue
 
-            # Neto UnitPrice is GST-inclusive \u2014 strip GST before saving to Odoo
             neto_price_incl = float(line.get('UnitPrice') or 0)
             neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
 
-            # Line-level discount: prefer PercentDiscount; fall back to
-            # ProductDiscount (dollar amount) converted to a percentage.
             percent_discount = float(line.get('PercentDiscount') or 0)
             if not percent_discount:
                 product_discount_amt = float(line.get('ProductDiscount') or 0)
@@ -408,8 +429,8 @@ class NetoConnector(models.AbstractModel):
                 line_prices[product.id] = (neto_price_excl, percent_discount)
             except Exception as line_exc:
                 _logger.warning(
-                    'Neto sync: could not create line SKU=%s on order %s \u2014 %s',
-                    sku, order_data.get('OrderID'), line_exc,
+                    'Neto sync: could not create line SKU=%s on order %s — %s',
+                    sku, order_id, line_exc,
                 )
 
         # --- Surcharge line ---
@@ -428,16 +449,15 @@ class NetoConnector(models.AbstractModel):
                 })
                 _logger.info(
                     'Neto sync: added surcharge line $%.4f (ex-GST) on order %s',
-                    surcharge_excl, order_data.get('OrderID'),
+                    surcharge_excl, order_id,
                 )
             except Exception as sc_exc:
                 _logger.warning(
-                    'Neto sync: could not create surcharge line on order %s \u2014 %s',
-                    order_data.get('OrderID'), sc_exc,
+                    'Neto sync: could not create surcharge line on order %s — %s',
+                    order_id, sc_exc,
                 )
 
         # --- Shipping line ---
-        # ShippingTotal is already ex-GST on Neto; NETO_SHIPPING product carries 10% GST
         shipping_total = float(order_data.get('ShippingTotal') or 0)
         if shipping_total > 0:
             shipping_product = self._get_shipping_product()
@@ -454,15 +474,15 @@ class NetoConnector(models.AbstractModel):
                     })
                     _logger.info(
                         'Neto sync: added shipping line $%.4f (ex-GST) on order %s',
-                        shipping_excl, order_data.get('OrderID'),
+                        shipping_excl, order_id,
                     )
                 except Exception as sh_exc:
                     _logger.warning(
-                        'Neto sync: could not create shipping line on order %s \u2014 %s',
-                        order_data.get('OrderID'), sh_exc,
+                        'Neto sync: could not create shipping line on order %s — %s',
+                        order_id, sh_exc,
                     )
 
-        # Confirm order \u2014 wrapped safely; staging env may lack stock.move.group_id
+        # Confirm order
         try:
             order.action_confirm()
             for ol in order.order_line:
@@ -481,17 +501,17 @@ class NetoConnector(models.AbstractModel):
         except AttributeError as ae:
             _logger.info(
                 'Neto sync: order %s left as draft (action_confirm skipped: %s)',
-                order_data.get('OrderID'), ae,
+                order_id, ae,
             )
             if date_order:
                 order.sudo().write({'date_order': date_order})
         except Exception as confirm_exc:
             _logger.warning(
-                'Neto sync: order %s created as draft \u2014 action_confirm() failed: %s',
-                order_data.get('OrderID'), confirm_exc,
+                'Neto sync: order %s created as draft — action_confirm() failed: %s',
+                order_id, confirm_exc,
             )
 
-        # Post missing SKU chatter message as proper HTML
+        # Post missing SKU chatter message
         if missing_lines:
             rows = Markup('').join(
                 Markup(
@@ -503,10 +523,7 @@ class NetoConnector(models.AbstractModel):
                     '<small style="color:#888;">(GST-inc)</small></td>'
                     '</tr>'
                 ).format(
-                    sku=m['sku'],
-                    name=m['name'],
-                    qty=m['qty'],
-                    price=m['price'],
+                    sku=m['sku'], name=m['name'], qty=m['qty'], price=m['price'],
                 )
                 for m in missing_lines
             )
@@ -551,7 +568,6 @@ class NetoConnector(models.AbstractModel):
         }
 
         try:
-            # Rule 3: duplicate \u2014 silent, no log entry
             if order_id in synced_ids:
                 return
             if self.env['sale.order'].sudo().search_count(
@@ -560,7 +576,6 @@ class NetoConnector(models.AbstractModel):
                 return
             synced_ids.add(order_id)
 
-            # Rule 1: zero-value internal transfer
             if grand_total == 0:
                 SyncLog.create({
                     **base_vals,
@@ -569,7 +584,6 @@ class NetoConnector(models.AbstractModel):
                 })
                 return
 
-            # Rule 2: BrightEyes replenishment
             if '@brighteyes.net.au' in billing_email.lower():
                 SyncLog.create({
                     **base_vals,
@@ -578,7 +592,6 @@ class NetoConnector(models.AbstractModel):
                 })
                 return
 
-            # Rule 6: status filter
             if order_status not in ALLOWED_STATUSES:
                 SyncLog.create({
                     **base_vals,
@@ -627,7 +640,7 @@ class NetoConnector(models.AbstractModel):
     def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None):
         if not store.api_key or not store.store_url:
             _logger.warning(
-                'Neto connector: store "%s" missing api_key or store_url \u2014 skipping.',
+                'Neto connector: store "%s" missing api_key or store_url — skipping.',
                 store.name,
             )
             return
@@ -651,7 +664,7 @@ class NetoConnector(models.AbstractModel):
             orders = self._fetch_orders(store, since_dt, until_dt=until_dt)
         except Exception as exc:
             _logger.error(
-                'Neto sync [%s]: _fetch_orders raised unexpectedly \u2014 %s', store.name, exc
+                'Neto sync [%s]: _fetch_orders raised unexpectedly — %s', store.name, exc
             )
             return
 
@@ -671,15 +684,15 @@ class NetoConnector(models.AbstractModel):
 
     def run_sync(self, hours_back=None):
         stores = self.env['neto.store'].sudo().search([('active', '=', True)])
-        _logger.info('Neto connector: run_sync called \u2014 %d active store(s) found', len(stores))
+        _logger.info('Neto connector: run_sync called — %d active store(s) found', len(stores))
         if not stores:
-            _logger.warning('Neto connector: no active stores configured \u2014 aborting sync.')
+            _logger.warning('Neto connector: no active stores configured — aborting sync.')
             return
         for store in stores:
             try:
                 self._sync_store(store, hours_back=hours_back)
             except Exception as exc:
                 _logger.exception(
-                    'Neto connector: _sync_store failed for store "%s" \u2014 %s',
+                    'Neto connector: _sync_store failed for store "%s" — %s',
                     store.name, exc,
                 )
