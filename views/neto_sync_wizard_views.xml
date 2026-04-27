@@ -11,7 +11,12 @@
                     <field name="store_id"/>
                     <field name="order_id_input"
                            string="Neto Order ID"
-                           placeholder="e.g. GLE39259 or LIA00001234"/>
+                           placeholder="e.g. GLE39259 or LIA36217"/>
+                    <field name="force_resync"
+                           string="Force Re-sync"
+                           help="Tick this if the order already exists in Odoo. 
+                                 It will patch Date Paid, Payment Method and Delivery Address 
+                                 from the latest Neto data without creating a duplicate."/>
                 </group>
                 <footer>
                     <button name="action_sync_order"
