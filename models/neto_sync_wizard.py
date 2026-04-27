@@ -20,7 +20,7 @@ _OUTPUT_SELECTOR = [
     'OrderLine.ProductDiscount',
     'DatePlaced', 'DateUpdated',
     'DatePaid',
-    'OrderPayment',
+    # OrderPayment removed — PaymentMethodName now fetched via GetPayment API
 ]
 
 
@@ -113,22 +113,20 @@ class NetoSyncWizard(models.TransientModel):
             )
         return orders[0]
 
-    def _patch_existing_order(self, sale_order, order_data):
+    def _patch_existing_order(self, sale_order, order_data, store):
         """Patch Neto-sourced fields on an existing SO without touching order lines.
 
         Updates: neto_date_paid, neto_payment_method, partner_shipping_id.
         Safe to run on confirmed/locked orders.
         """
         connector = self.env['neto.connector']
+        order_id = order_data.get('OrderID', '')
 
         # DatePaid
         date_paid = connector._parse_neto_datetime(order_data.get('DatePaid'))
 
-        # Payment method
-        payments = order_data.get('OrderPayment', []) or []
-        if isinstance(payments, dict):
-            payments = [payments]
-        payment_method = (payments[0].get('PaymentType') or '').strip() if payments else ''
+        # Payment method — via GetPayment API (OrderPayment block on GetOrder is unreliable)
+        payment_method = connector._fetch_payment_method(store, order_id)
 
         # Shipping address
         ship_partner = connector._get_or_create_ship_address(
@@ -168,7 +166,7 @@ class NetoSyncWizard(models.TransientModel):
 
         if existing and self.force_resync:
             # Patch only — don't create a duplicate
-            patched = self._patch_existing_order(existing, order_data)
+            self._patch_existing_order(existing, order_data, store)
             self.env.cr.commit()
             return {
                 'type': 'ir.actions.act_window',
