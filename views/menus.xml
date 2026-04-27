@@ -1,26 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-    <!-- Server action: Run Sync Now (last 7 days) — ALL stores -->
-    <record id="neto_run_sync_action" model="ir.actions.server">
-        <field name="name">Run Neto Sync Now</field>
-        <field name="model_id" ref="model_neto_sync_log"/>
-        <field name="state">code</field>
-        <field name="code">
-env['neto.connector'].run_sync(hours_back=168)
-action = {
-    'type': 'ir.actions.client',
-    'tag': 'display_notification',
-    'params': {
-        'title': 'Neto Sync',
-        'message': 'Sync completed (last 7 days). Check the Sync Log for results.',
-        'type': 'success',
-        'sticky': False,
-    },
-}
-        </field>
-    </record>
-
     <!-- Action: open Settings -->
     <record id="neto_settings_action" model="ir.actions.act_window">
         <field name="name">Neto Settings</field>
@@ -48,17 +28,18 @@ action = {
               action="neto_sync_log_action"
               sequence="10"/>
 
+    <!-- Run Sync Now: opens date-range wizard -->
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"
               parent="menu_neto_sync_root"
-              action="neto_run_sync_action"
+              action="neto_sync_wizard_views.neto_sync_wizard_action"
               sequence="20"/>
 
-    <!-- Sync Single Order — admin only -->
+    <!-- Sync Single Order: opens single-order wizard (admin only) -->
     <menuitem id="menu_neto_sync_single_order"
               name="Sync Single Order"
               parent="menu_neto_sync_root"
-              action="neto_sync_wizard_action"
+              action="neto_sync_wizard_views.neto_sync_wizard_action_single"
               groups="base.group_system"
               sequence="25"/>
 

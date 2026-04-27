@@ -220,7 +220,7 @@ class NetoConnector(models.AbstractModel):
                     'sku': sku,
                     'name': line.get('ProductName') or '',
                     'qty': line.get('Quantity') or '',
-                    'price': line.get('UnitPrice') or '',
+                    'price': f"{float(line.get('UnitPrice') or 0):.2f}",
                 })
                 continue
 
@@ -268,12 +268,21 @@ class NetoConnector(models.AbstractModel):
                     order_data.get('OrderID'), sc_exc,
                 )
 
+        # Confirm order — wrapped safely; staging env may lack stock.move.group_id
         try:
             order.action_confirm()
             for ol in order.order_line:
                 neto_price = line_prices.get(ol.product_id.id)
                 if neto_price is not None and ol.price_unit != neto_price:
                     ol.sudo().write({'price_unit': neto_price})
+            if date_order:
+                order.sudo().write({'date_order': date_order})
+        except AttributeError as ae:
+            # Staging env missing stock.move.group_id — leave as draft, log once
+            _logger.info(
+                'Neto sync: order %s left as draft (action_confirm skipped: %s)',
+                order_data.get('OrderID'), ae,
+            )
             if date_order:
                 order.sudo().write({'date_order': date_order})
         except Exception as confirm_exc:
@@ -428,7 +437,6 @@ class NetoConnector(models.AbstractModel):
             return
 
         if since_dt:
-            # Explicit datetime passed in (e.g. from date range wizard)
             pass
         elif hours_back is not None:
             since_dt = datetime.now(timezone.utc) - timedelta(hours=hours_back)
@@ -462,16 +470,14 @@ class NetoConnector(models.AbstractModel):
         _logger.info('Neto sync [%s]: completed.', store.name)
 
     # -------------------------------------------------------------------------
-    # Public entry point
+    # Public entry point (cron)
     # -------------------------------------------------------------------------
 
     def run_sync(self, hours_back=None):
         stores = self.env['neto.store'].sudo().search([('active', '=', True)])
         _logger.info('Neto connector: run_sync called — %d active store(s) found', len(stores))
         if not stores:
-            _logger.warning(
-                'Neto connector: no active stores configured — aborting sync.'
-            )
+            _logger.warning('Neto connector: no active stores configured — aborting sync.')
             return
         for store in stores:
             try:
