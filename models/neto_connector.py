@@ -12,7 +12,7 @@ ALLOWED_STATUSES = frozenset({'New', 'Pick', 'Pack', 'Dispatched', 'Pending', 'N
 _API_ACTION = 'GetOrder'
 _GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for Odoo
 _SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
-_DISCOUNT_SKU  = 'NETO-DISCOUNT'   # internal product SKU for discount lines
+_COUPON_SKU    = 'NETO-COUPON'     # internal product SKU for coupon/voucher discount lines
 
 
 class NetoConnector(models.AbstractModel):
@@ -51,20 +51,20 @@ class NetoConnector(models.AbstractModel):
             _logger.info('Neto sync: created surcharge product (SKU=%s)', _SURCHARGE_SKU)
         return product
 
-    def _get_discount_product(self):
-        """Return (or create) the discount service product."""
+    def _get_coupon_product(self):
+        """Return (or create) the coupon/discount service product."""
         Product = self.env['product.product'].sudo()
-        product = Product.search([('default_code', '=', _DISCOUNT_SKU)], limit=1)
+        product = Product.search([('default_code', '=', _COUPON_SKU)], limit=1)
         if not product:
             product = Product.create({
-                'name': 'Neto Order Discount',
-                'default_code': _DISCOUNT_SKU,
+                'name': 'Neto Coupon / Discount',
+                'default_code': _COUPON_SKU,
                 'type': 'service',
                 'sale_ok': True,
                 'purchase_ok': False,
                 'invoice_policy': 'order',
             })
-            _logger.info('Neto sync: created discount product (SKU=%s)', _DISCOUNT_SKU)
+            _logger.info('Neto sync: created coupon product (SKU=%s)', _COUPON_SKU)
         return product
 
     # -------------------------------------------------------------------------
@@ -90,10 +90,12 @@ class NetoConnector(models.AbstractModel):
                 **date_filter,
                 'OutputSelector': [
                     'OrderID', 'Username', 'GrandTotal', 'SurchargeTotal',
-                    'DiscountTotal',
+                    'CouponCode', 'CouponDiscount',
                     'OrderStatus', 'OrderLine', 'OrderLine.SKU',
                     'OrderLine.ProductName', 'OrderLine.UnitPrice',
-                    'OrderLine.Quantity', 'BillingEmail', 'BillingName',
+                    'OrderLine.Quantity', 'OrderLine.PercentDiscount',
+                    'OrderLine.ProductDiscount', 'OrderLine.CouponDiscount',
+                    'BillingEmail', 'BillingName',
                     'BillingAddress', 'DatePlaced', 'DateUpdated',
                 ],
             }
@@ -217,7 +219,7 @@ class NetoConnector(models.AbstractModel):
         if isinstance(raw_lines, dict):
             raw_lines = [raw_lines]
 
-        line_prices = {}
+        line_prices = {}   # product_id -> (price_excl, discount_pct)
         missing_lines = []  # collect unmatched SKUs for chatter
 
         for line in raw_lines:
@@ -246,16 +248,27 @@ class NetoConnector(models.AbstractModel):
             neto_price_incl = float(line.get('UnitPrice') or 0)
             neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
 
+            # Line-level discount: prefer PercentDiscount; fall back to
+            # ProductDiscount (dollar amount) converted to a percentage
+            percent_discount = float(line.get('PercentDiscount') or 0)
+            if not percent_discount:
+                product_discount_amt = float(line.get('ProductDiscount') or 0)
+                if product_discount_amt and neto_price_incl:
+                    percent_discount = round(
+                        product_discount_amt / neto_price_incl * 100, 4
+                    )
+
             try:
                 OrderLine.create({
                     'order_id': order.id,
                     'product_id': product.id,
                     'product_uom_qty': float(line.get('Quantity') or 1),
                     'price_unit': neto_price_excl,
+                    'discount': percent_discount,
                     'name': product.name,
                     'product_uom_id': product.uom_id.id,
                 })
-                line_prices[product.id] = neto_price_excl
+                line_prices[product.id] = (neto_price_excl, percent_discount)
             except Exception as line_exc:
                 _logger.warning(
                     'Neto sync: could not create line SKU=%s on order %s — %s',
@@ -286,37 +299,45 @@ class NetoConnector(models.AbstractModel):
                     order_data.get('OrderID'), sc_exc,
                 )
 
-        # Discount line (negative service line, GST-inclusive amount from Neto)
-        discount_total = float(order_data.get('DiscountTotal') or 0)
-        if discount_total > 0:
-            discount_product = self._get_discount_product()
-            discount_excl = round(discount_total / _GST_DIVISOR, 4)
+        # Order-level coupon/voucher discount (negative line)
+        coupon_discount = float(order_data.get('CouponDiscount') or 0)
+        if coupon_discount > 0:
+            coupon_product = self._get_coupon_product()
+            coupon_excl = round(coupon_discount / _GST_DIVISOR, 4)
+            coupon_code = order_data.get('CouponCode') or 'Coupon'
             try:
                 OrderLine.create({
                     'order_id': order.id,
-                    'product_id': discount_product.id,
+                    'product_id': coupon_product.id,
                     'product_uom_qty': 1,
-                    'price_unit': -discount_excl,  # negative to reduce order total
-                    'name': 'Neto Order Discount',
-                    'product_uom_id': discount_product.uom_id.id,
+                    'price_unit': -coupon_excl,  # negative to reduce order total
+                    'name': f'Neto Coupon Discount ({coupon_code})',
+                    'product_uom_id': coupon_product.uom_id.id,
                 })
                 _logger.info(
-                    'Neto sync: added discount line -$%.4f (ex-GST) on order %s',
-                    discount_excl, order_data.get('OrderID'),
+                    'Neto sync: added coupon discount line -$%.4f (ex-GST) [%s] on order %s',
+                    coupon_excl, coupon_code, order_data.get('OrderID'),
                 )
-            except Exception as dc_exc:
+            except Exception as cp_exc:
                 _logger.warning(
-                    'Neto sync: could not create discount line on order %s — %s',
-                    order_data.get('OrderID'), dc_exc,
+                    'Neto sync: could not create coupon line on order %s — %s',
+                    order_data.get('OrderID'), cp_exc,
                 )
 
         # Confirm order — wrapped safely; staging env may lack stock.move.group_id
         try:
             order.action_confirm()
             for ol in order.order_line:
-                neto_price = line_prices.get(ol.product_id.id)
-                if neto_price is not None and ol.price_unit != neto_price:
-                    ol.sudo().write({'price_unit': neto_price})
+                neto = line_prices.get(ol.product_id.id)
+                if neto is not None:
+                    price, disc = neto
+                    writes = {}
+                    if ol.price_unit != price:
+                        writes['price_unit'] = price
+                    if ol.discount != disc:
+                        writes['discount'] = disc
+                    if writes:
+                        ol.sudo().write(writes)
             if date_order:
                 order.sudo().write({'date_order': date_order})
         except AttributeError as ae:
