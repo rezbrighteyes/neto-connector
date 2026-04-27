@@ -71,14 +71,24 @@ class NetoConnector(models.AbstractModel):
         payload = {
             'Filter': {
                 **date_filter,
+                # Neto GetOrder OutputSelector reference:
+                # https://developers.maropost.com/documentation/engineers/api-documentation/orders-invoices/getorder
+                #
+                # BillAddress and Email are top-level selectors — Neto returns billing
+                # fields flat on the order object (BillFirstName, BillLastName,
+                # BillCompany, BillStreetLine1/2, BillCity, BillState, BillPostCode,
+                # BillCountry, BillPhone). There are NO sub-selectors like
+                # BillAddress.BillCity.
                 'OutputSelector': [
-                    'OrderID', 'Username', 'GrandTotal', 'SurchargeTotal',
-                    'OrderStatus', 'OrderLine', 'OrderLine.SKU',
+                    'OrderID', 'Username', 'Email',
+                    'BillAddress',
+                    'GrandTotal', 'SurchargeTotal',
+                    'OrderStatus',
+                    'OrderLine', 'OrderLine.SKU',
                     'OrderLine.ProductName', 'OrderLine.UnitPrice',
                     'OrderLine.Quantity', 'OrderLine.PercentDiscount',
                     'OrderLine.ProductDiscount',
-                    'BillingEmail', 'BillingName',
-                    'BillingAddress', 'DatePlaced', 'DateUpdated',
+                    'DatePlaced', 'DateUpdated',
                 ],
             }
         }
@@ -131,28 +141,49 @@ class NetoConnector(models.AbstractModel):
     # Partner
     # -------------------------------------------------------------------------
 
-    def _get_or_create_partner(self, username, billing_name, billing_email, billing_address=None):
-        """Find partner by neto_username or create one with full billing details."""
+    def _get_or_create_partner(self, username, order_data):
+        """Find partner by neto_username or create one from the order's billing fields.
+
+        Neto returns billing data as flat top-level keys on the order object when
+        the 'BillAddress' and 'Email' OutputSelectors are requested:
+            BillFirstName, BillLastName, BillCompany,
+            BillStreetLine1, BillStreetLine2,
+            BillCity, BillState, BillPostCode, BillCountry, BillPhone
+        There is no nested BillingAddress dict.
+        """
         Partner = self.env['res.partner'].sudo()
         partner = Partner.search([('neto_username', '=', username)], limit=1)
         if partner:
             return partner, False
 
-        addr = billing_address or {}
+        # Build display name: prefer company, then first+last, then username
+        first = (order_data.get('BillFirstName') or '').strip()
+        last  = (order_data.get('BillLastName') or '').strip()
+        company = (order_data.get('BillCompany') or '').strip()
+        if company:
+            display_name = company
+        elif first or last:
+            display_name = f"{first} {last}".strip()
+        else:
+            display_name = username
+
+        email = (order_data.get('Email') or '').strip()
+
         vals = {
             'neto_username': username,
             'ref': username,
-            'name': billing_name if billing_name else username,
-            'email': billing_email,
-            'is_company': True,
+            'name': display_name,
+            'email': email or False,
+            'is_company': bool(company),
             'customer_rank': 1,
-            'street':  addr.get('BillStreetLine1') or addr.get('Street1') or False,
-            'street2': addr.get('BillStreetLine2') or addr.get('Street2') or False,
-            'city':    addr.get('BillCity') or addr.get('City') or False,
-            'zip':     addr.get('BillPostCode') or addr.get('PostCode') or False,
-            'phone':   addr.get('BillPhone') or addr.get('BillMobile') or addr.get('Phone') or addr.get('Mobile') or False,
+            'street':  order_data.get('BillStreetLine1') or False,
+            'street2': order_data.get('BillStreetLine2') or False,
+            'city':    order_data.get('BillCity') or False,
+            'zip':     order_data.get('BillPostCode') or False,
+            'phone':   order_data.get('BillPhone') or False,
         }
-        country_code = addr.get('BillCountry') or addr.get('Country') or ''
+
+        country_code = (order_data.get('BillCountry') or '').strip()
         if country_code:
             country = self.env['res.country'].sudo().search(
                 ['|', ('code', '=ilike', country_code),
@@ -160,7 +191,7 @@ class NetoConnector(models.AbstractModel):
             )
             if country:
                 vals['country_id'] = country.id
-                state_name = addr.get('BillState') or addr.get('State') or ''
+                state_name = (order_data.get('BillState') or '').strip()
                 if state_name:
                     state = self.env['res.country.state'].sudo().search(
                         [('country_id', '=', country.id),
@@ -171,6 +202,10 @@ class NetoConnector(models.AbstractModel):
                         vals['state_id'] = state.id
 
         partner = Partner.create(vals)
+        _logger.info(
+            'Neto sync: created partner "%s" (username=%s, email=%s)',
+            display_name, username, email,
+        )
         return partner, True
 
     # -------------------------------------------------------------------------
@@ -226,14 +261,14 @@ class NetoConnector(models.AbstractModel):
                 })
                 continue
 
-            # Neto UnitPrice is GST-inclusive — strip GST before saving to Odoo
+            # Neto UnitPrice is GST-inclusive \u2014 strip GST before saving to Odoo
             neto_price_incl = float(line.get('UnitPrice') or 0)
             neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
 
             # Line-level discount: prefer PercentDiscount; fall back to
             # ProductDiscount (dollar amount) converted to a percentage.
-            # Note: CouponDiscount at the order level is just the sum of these
-            # line discounts — do NOT add a separate negative line for it.
+            # CouponDiscount at the order level is the sum of line discounts \u2014
+            # do NOT add a separate negative line for it.
             percent_discount = float(line.get('PercentDiscount') or 0)
             if not percent_discount:
                 product_discount_amt = float(line.get('ProductDiscount') or 0)
@@ -259,7 +294,7 @@ class NetoConnector(models.AbstractModel):
                     sku, order_data.get('OrderID'), line_exc,
                 )
 
-        # Surcharge line — this IS a real additional charge, not covered by line discounts
+        # Surcharge line \u2014 this IS a real additional charge, not covered by line discounts
         surcharge_total = float(order_data.get('SurchargeTotal') or 0)
         if surcharge_total > 0:
             surcharge_product = self._get_surcharge_product()
@@ -283,7 +318,7 @@ class NetoConnector(models.AbstractModel):
                     order_data.get('OrderID'), sc_exc,
                 )
 
-        # Confirm order — wrapped safely; staging env may lack stock.move.group_id
+        # Confirm order \u2014 wrapped safely; staging env may lack stock.move.group_id
         try:
             order.action_confirm()
             for ol in order.order_line:
@@ -300,7 +335,7 @@ class NetoConnector(models.AbstractModel):
             if date_order:
                 order.sudo().write({'date_order': date_order})
         except AttributeError as ae:
-            # Staging env missing stock.move.group_id — leave as draft, log once
+            # Staging env missing stock.move.group_id \u2014 leave as draft, log once
             _logger.info(
                 'Neto sync: order %s left as draft (action_confirm skipped: %s)',
                 order_data.get('OrderID'), ae,
@@ -358,9 +393,7 @@ class NetoConnector(models.AbstractModel):
 
         order_id = order_data.get('OrderID', '')
         username = order_data.get('Username', '') or ''
-        billing_email = order_data.get('BillingEmail', '') or ''
-        billing_name = order_data.get('BillingName', '') or ''
-        billing_address = order_data.get('BillingAddress') or {}
+        billing_email = (order_data.get('Email') or '').strip()
         grand_total = float(order_data.get('GrandTotal') or 0)
         order_status = order_data.get('OrderStatus', '') or ''
         neto_order_date = self._parse_neto_datetime(order_data.get('DatePlaced'))
@@ -411,9 +444,7 @@ class NetoConnector(models.AbstractModel):
                 })
                 return
 
-            partner, partner_created = self._get_or_create_partner(
-                username, billing_name, billing_email, billing_address
-            )
+            partner, partner_created = self._get_or_create_partner(username, order_data)
             sale_order, missing_lines = self._create_sale_order(order_data, partner, store)
             line_count = len(sale_order.order_line)
 
