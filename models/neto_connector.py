@@ -3,6 +3,7 @@ import logging
 import requests
 from datetime import datetime, timedelta, timezone
 
+from markupsafe import Markup
 from odoo import models, fields
 
 _logger = logging.getLogger(__name__)
@@ -281,19 +282,27 @@ class NetoConnector(models.AbstractModel):
                 order_data.get('OrderID'), confirm_exc,
             )
 
-        # Post missing SKU chatter message
+        # Post missing SKU chatter message as proper HTML (Markup prevents auto-escaping)
         if missing_lines:
-            rows = ''.join(
-                '<tr style="border-bottom:1px solid #e0e0e0;">'
-                f'<td style="padding:4px 10px;font-family:monospace;">{m["sku"]}</td>'
-                f'<td style="padding:4px 10px;">{m["name"]}</td>'
-                f'<td style="padding:4px 10px;text-align:center;">{m["qty"]}</td>'
-                f'<td style="padding:4px 10px;text-align:right;">${m["price"]} <small style="color:#888;">(GST-inc)</small></td>'
-                '</tr>'
+            rows = Markup('').join(
+                Markup(
+                    '<tr style="border-bottom:1px solid #e0e0e0;">'
+                    '<td style="padding:4px 10px;font-family:monospace;">{sku}</td>'
+                    '<td style="padding:4px 10px;">{name}</td>'
+                    '<td style="padding:4px 10px;text-align:center;">{qty}</td>'
+                    '<td style="padding:4px 10px;text-align:right;">${price} '
+                    '<small style="color:#888;">(GST-inc)</small></td>'
+                    '</tr>'
+                ).format(
+                    sku=m['sku'],
+                    name=m['name'],
+                    qty=m['qty'],
+                    price=m['price'],
+                )
                 for m in missing_lines
             )
-            msg = (
-                '<p>⚠️ <strong>The following Neto lines could not be matched to an '
+            msg = Markup(
+                '<p>\u26a0\ufe0f <strong>The following Neto lines could not be matched to an '
                 'Odoo product and were <u>NOT</u> added to this order:</strong></p>'
                 '<table style="border-collapse:collapse;width:100%;font-size:13px;">'
                 '<thead><tr style="background:#f5f5f5;font-weight:600;">'
@@ -302,8 +311,8 @@ class NetoConnector(models.AbstractModel):
                 '<th style="padding:5px 10px;text-align:center;">Qty</th>'
                 '<th style="padding:5px 10px;text-align:right;">Unit Price</th>'
                 '</tr></thead>'
-                f'<tbody>{rows}</tbody></table>'
-            )
+                '<tbody>{rows}</tbody></table>'
+            ).format(rows=rows)
             order.sudo().message_post(body=msg)
 
         return order, missing_lines
