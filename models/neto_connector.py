@@ -12,6 +12,7 @@ ALLOWED_STATUSES = frozenset({'New', 'Pick', 'Pack', 'Dispatched', 'Pending', 'N
 _API_ACTION = 'GetOrder'
 _GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for Odoo
 _SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
+_DISCOUNT_SKU  = 'NETO-DISCOUNT'   # internal product SKU for discount lines
 
 
 class NetoConnector(models.AbstractModel):
@@ -50,6 +51,22 @@ class NetoConnector(models.AbstractModel):
             _logger.info('Neto sync: created surcharge product (SKU=%s)', _SURCHARGE_SKU)
         return product
 
+    def _get_discount_product(self):
+        """Return (or create) the discount service product."""
+        Product = self.env['product.product'].sudo()
+        product = Product.search([('default_code', '=', _DISCOUNT_SKU)], limit=1)
+        if not product:
+            product = Product.create({
+                'name': 'Neto Order Discount',
+                'default_code': _DISCOUNT_SKU,
+                'type': 'service',
+                'sale_ok': True,
+                'purchase_ok': False,
+                'invoice_policy': 'order',
+            })
+            _logger.info('Neto sync: created discount product (SKU=%s)', _DISCOUNT_SKU)
+        return product
+
     # -------------------------------------------------------------------------
     # API
     # -------------------------------------------------------------------------
@@ -73,6 +90,7 @@ class NetoConnector(models.AbstractModel):
                 **date_filter,
                 'OutputSelector': [
                     'OrderID', 'Username', 'GrandTotal', 'SurchargeTotal',
+                    'DiscountTotal',
                     'OrderStatus', 'OrderLine', 'OrderLine.SKU',
                     'OrderLine.ProductName', 'OrderLine.UnitPrice',
                     'OrderLine.Quantity', 'BillingEmail', 'BillingName',
@@ -266,6 +284,30 @@ class NetoConnector(models.AbstractModel):
                 _logger.warning(
                     'Neto sync: could not create surcharge line on order %s — %s',
                     order_data.get('OrderID'), sc_exc,
+                )
+
+        # Discount line (negative service line, GST-inclusive amount from Neto)
+        discount_total = float(order_data.get('DiscountTotal') or 0)
+        if discount_total > 0:
+            discount_product = self._get_discount_product()
+            discount_excl = round(discount_total / _GST_DIVISOR, 4)
+            try:
+                OrderLine.create({
+                    'order_id': order.id,
+                    'product_id': discount_product.id,
+                    'product_uom_qty': 1,
+                    'price_unit': -discount_excl,  # negative to reduce order total
+                    'name': 'Neto Order Discount',
+                    'product_uom_id': discount_product.uom_id.id,
+                })
+                _logger.info(
+                    'Neto sync: added discount line -$%.4f (ex-GST) on order %s',
+                    discount_excl, order_data.get('OrderID'),
+                )
+            except Exception as dc_exc:
+                _logger.warning(
+                    'Neto sync: could not create discount line on order %s — %s',
+                    order_data.get('OrderID'), dc_exc,
                 )
 
         # Confirm order — wrapped safely; staging env may lack stock.move.group_id

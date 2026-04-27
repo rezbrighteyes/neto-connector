@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
+    <!-- Form view: Neto badges in header + fields in Other Info tab -->
     <record id="sale_order_view_form_neto" model="ir.ui.view">
         <field name="name">sale.order.form.neto</field>
         <field name="model">sale.order</field>
@@ -28,6 +29,21 @@
                 <field name="neto_order_id" readonly="1" string="Neto Order ID"/>
                 <field name="neto_order_status" readonly="1" string="Neto Status"/>
             </group>
+        </field>
+    </record>
+
+    <!-- List view: add Neto Order ID column after the order number -->
+    <record id="sale_order_view_list_neto" model="ir.ui.view">
+        <field name="name">sale.order.list.neto</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_quotation_tree_with_onboarding"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='name']" position="after">
+                <field name="neto_order_id"
+                       string="Neto Order"
+                       optional="show"
+                       readonly="1"/>
+            </xpath>
         </field>
     </record>
 
