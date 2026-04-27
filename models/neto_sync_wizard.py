@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
 import requests
+from datetime import datetime, timezone
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
 
@@ -11,34 +12,56 @@ _OUTPUT_SELECTOR = [
     'ShippingTotal', 'SurchargeTotal', 'OrderStatus',
     'OrderLine', 'OrderLine.SKU', 'OrderLine.ProductName',
     'OrderLine.UnitPrice', 'OrderLine.Quantity',
-    'BillAddress', 'DatePlaced', 'DateUpdated',
+    'BillAddress', 'BillingEmail', 'BillingName', 'BillingAddress',
+    'DatePlaced', 'DateUpdated',
 ]
 
 
 class NetoSyncWizard(models.TransientModel):
     _name = 'neto.sync.wizard'
-    _description = 'Sync a Single Neto Order'
+    _description = 'Sync Neto Orders'
 
     store_id = fields.Many2one(
         'neto.store', string='Store', required=True,
         domain=[('active', '=', True)],
         help='Which Neto store to fetch the order from.',
     )
+    # --- Single order mode ---
     order_id_input = fields.Char(
         string='Neto Order ID',
-        required=True,
-        help='The Neto order number, e.g. GLE39259 or LIA00001234.',
+        help='The Neto order number, e.g. GLE39259 or LIA00001234. Leave blank to use date range.',
+    )
+    # --- Date range mode ---
+    date_from = fields.Datetime(
+        string='Date From',
+        help='Sync orders updated from this date/time (UTC). Used when no Order ID is provided.',
+    )
+    date_to = fields.Datetime(
+        string='Date To',
+        help='Sync orders updated up to this date/time (UTC). Leave blank to sync up to now.',
     )
     result_message = fields.Text(string='Result', readonly=True)
+
+    @api.onchange('order_id_input')
+    def _onchange_order_id_input(self):
+        """Clear date fields if a specific order ID is entered."""
+        if self.order_id_input:
+            self.date_from = False
+            self.date_to = False
 
     def action_sync_order(self):
         self.ensure_one()
         store = self.store_id
         order_id = (self.order_id_input or '').strip().upper()
 
-        if not order_id:
-            raise UserError(_('Please enter a Neto Order ID.'))
+        if order_id:
+            return self._sync_single_order(store, order_id)
+        elif self.date_from:
+            return self._sync_date_range(store, self.date_from, self.date_to)
+        else:
+            raise UserError(_('Please enter a Neto Order ID or set a Date From for date range sync.'))
 
+    def _sync_single_order(self, store, order_id):
         # Check if already synced
         existing = self.env['sale.order'].sudo().search(
             [('neto_order_id', '=', order_id)], limit=1
@@ -48,7 +71,6 @@ class NetoSyncWizard(models.TransientModel):
                 _('Order %s has already been synced — see %s.') % (order_id, existing.name)
             )
 
-        # Fetch from Neto API
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -63,9 +85,7 @@ class NetoSyncWizard(models.TransientModel):
             }
         }
 
-        _logger.info(
-            'Neto single-order sync [%s]: fetching order %s', store.name, order_id
-        )
+        _logger.info('Neto single-order sync [%s]: fetching order %s', store.name, order_id)
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
             response.raise_for_status()
@@ -92,7 +112,6 @@ class NetoSyncWizard(models.TransientModel):
         connector._process_order(orders[0], store, synced_ids)
         self.env.cr.commit()
 
-        # Find the created order to open it
         sale_order = self.env['sale.order'].sudo().search(
             [('neto_order_id', '=', order_id)], limit=1
         )
@@ -110,7 +129,6 @@ class NetoSyncWizard(models.TransientModel):
                 'target': 'current',
             }
         else:
-            # Synced but skipped (status filter, zero value, etc.) — show log
             return {
                 'type': 'ir.actions.act_window',
                 'res_model': 'neto.sync.log',
@@ -119,3 +137,26 @@ class NetoSyncWizard(models.TransientModel):
                 'target': 'current',
                 'name': f'Sync Log: {order_id}',
             }
+
+    def _sync_date_range(self, store, date_from, date_to):
+        # Convert naive Odoo datetimes to UTC-aware
+        since_dt = date_from.replace(tzinfo=timezone.utc)
+        until_dt = date_to.replace(tzinfo=timezone.utc) if date_to else None
+
+        connector = self.env['neto.connector']
+        connector._sync_store(store, since_dt=since_dt, until_dt=until_dt)
+
+        label = f"{date_from.strftime('%d/%m/%Y %H:%M')}"
+        if date_to:
+            label += f" → {date_to.strftime('%d/%m/%Y %H:%M')}"
+        else:
+            label += ' → now'
+
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'neto.sync.log',
+            'view_mode': 'list,form',
+            'domain': [('store_id', '=', store.id)],
+            'target': 'current',
+            'name': f'Sync Log: {label}',
+        }

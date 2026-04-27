@@ -6,10 +6,20 @@
         <field name="model">sale.order</field>
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
-            <!-- Inject into the Sales group inside Other Info tab -->
-            <!-- Odoo 19: page name="other_information", group name="sales_person" -->
+            <!-- Neto badge + order ID shown at the top of the form, before the order name -->
+            <field name="name" position="before">
+                <div class="o_field_widget" invisible="not neto_order_id">
+                    <span class="badge rounded-pill text-bg-info me-1"
+                          t-esc="neto_order_id"/>
+                    <span t-if="neto_order_status"
+                          class="badge rounded-pill text-bg-success"
+                          t-esc="neto_order_status"/>
+                </div>
+            </field>
+            <!-- Also store in Other Info for reference -->
             <group name="sales_person" position="inside">
                 <field name="neto_order_id" readonly="1" string="Neto Order ID"/>
+                <field name="neto_order_status" readonly="1" string="Neto Status"/>
             </group>
         </field>
     </record>

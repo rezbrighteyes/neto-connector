@@ -5,14 +5,23 @@
         <field name="name">neto.sync.wizard.form</field>
         <field name="model">neto.sync.wizard</field>
         <field name="arch" type="xml">
-            <form string="Sync Single Neto Order">
-                <group>
+            <form string="Sync Neto Orders">
+                <group string="Store">
                     <field name="store_id"/>
-                    <field name="order_id_input" placeholder="e.g. GLE39259 or LIA00001234"/>
+                </group>
+                <group string="Option 1: Sync a Single Order">
+                    <field name="order_id_input"
+                           placeholder="e.g. GLE39259 or LIA00001234"/>
+                </group>
+                <group string="Option 2: Sync by Date Range">
+                    <field name="date_from" widget="datetime"
+                           placeholder="From date/time (UTC)"/>
+                    <field name="date_to" widget="datetime"
+                           placeholder="To date/time (UTC) — leave blank for now"/>
                 </group>
                 <footer>
                     <button name="action_sync_order"
-                            string="Sync Order"
+                            string="Sync"
                             type="object"
                             class="btn-primary"/>
                     <button string="Cancel" class="btn-secondary" special="cancel"/>
@@ -22,7 +31,7 @@
     </record>
 
     <record id="neto_sync_wizard_action" model="ir.actions.act_window">
-        <field name="name">Sync Single Order</field>
+        <field name="name">Sync Orders</field>
         <field name="res_model">neto.sync.wizard</field>
         <field name="view_mode">form</field>
         <field name="target">new</field>

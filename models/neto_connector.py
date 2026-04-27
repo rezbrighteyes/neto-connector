@@ -53,7 +53,7 @@ class NetoConnector(models.AbstractModel):
     # API
     # -------------------------------------------------------------------------
 
-    def _fetch_orders(self, store, since_dt):
+    def _fetch_orders(self, store, since_dt, until_dt=None):
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -61,21 +61,28 @@ class NetoConnector(models.AbstractModel):
             'NETOAPI_KEY': store.api_key,
             'Accept': 'application/json',
         }
+        date_filter = {
+            'DateUpdatedFrom': since_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+        }
+        if until_dt:
+            date_filter['DateUpdatedTo'] = until_dt.strftime('%Y-%m-%dT%H:%M:%S')
+
         payload = {
             'Filter': {
-                'DateUpdatedFrom': since_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                **date_filter,
                 'OutputSelector': [
                     'OrderID', 'Username', 'GrandTotal', 'SurchargeTotal',
                     'OrderStatus', 'OrderLine', 'OrderLine.SKU',
-                    'OrderLine.UnitPrice', 'OrderLine.Quantity',
-                    'BillingEmail', 'BillingName', 'BillingAddress',
-                    'DatePlaced', 'DateUpdated',
+                    'OrderLine.ProductName', 'OrderLine.UnitPrice',
+                    'OrderLine.Quantity', 'BillingEmail', 'BillingName',
+                    'BillingAddress', 'DatePlaced', 'DateUpdated',
                 ],
             }
         }
         _logger.info(
-            'Neto sync [%s]: POST %s  DateUpdatedFrom=%s',
-            store.name, url, payload['Filter']['DateUpdatedFrom'],
+            'Neto sync [%s]: POST %s  DateUpdatedFrom=%s%s',
+            store.name, url, date_filter['DateUpdatedFrom'],
+            f"  DateUpdatedTo={date_filter['DateUpdatedTo']}" if until_dt else '',
         )
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
@@ -176,10 +183,12 @@ class NetoConnector(models.AbstractModel):
             self._parse_neto_datetime(order_data.get('DatePlaced'))
             or fields.Datetime.now()
         )
+        order_status = order_data.get('OrderStatus', '') or ''
 
         order = Order.create({
             'partner_id': partner.id,
             'neto_order_id': order_data.get('OrderID'),
+            'neto_order_status': order_status,
             'date_order': date_order,
             'warehouse_id': store.warehouse_id.id,
             'company_id': store.company_id.id,
@@ -190,6 +199,8 @@ class NetoConnector(models.AbstractModel):
             raw_lines = [raw_lines]
 
         line_prices = {}
+        missing_lines = []  # collect unmatched SKUs for chatter
+
         for line in raw_lines:
             sku = (line.get('SKU') or line.get('Sku') or '').strip()
             if not sku:
@@ -204,6 +215,12 @@ class NetoConnector(models.AbstractModel):
                     'Neto sync: SKU "%s" not found on order %s — skipping line',
                     sku, order_data.get('OrderID'),
                 )
+                missing_lines.append({
+                    'sku': sku,
+                    'name': line.get('ProductName') or '',
+                    'qty': line.get('Quantity') or '',
+                    'price': line.get('UnitPrice') or '',
+                })
                 continue
 
             # Neto UnitPrice is GST-inclusive — strip GST before saving to Odoo
@@ -263,7 +280,33 @@ class NetoConnector(models.AbstractModel):
                 'Neto sync: order %s created as draft — action_confirm() failed: %s',
                 order_data.get('OrderID'), confirm_exc,
             )
-        return order
+
+        # Post missing SKU chatter message
+        if missing_lines:
+            rows = ''.join(
+                '<tr style="border-bottom:1px solid #e0e0e0;">'
+                f'<td style="padding:4px 10px;font-family:monospace;">{m["sku"]}</td>'
+                f'<td style="padding:4px 10px;">{m["name"]}</td>'
+                f'<td style="padding:4px 10px;text-align:center;">{m["qty"]}</td>'
+                f'<td style="padding:4px 10px;text-align:right;">${m["price"]} <small style="color:#888;">(GST-inc)</small></td>'
+                '</tr>'
+                for m in missing_lines
+            )
+            msg = (
+                '<p>⚠️ <strong>The following Neto lines could not be matched to an '
+                'Odoo product and were <u>NOT</u> added to this order:</strong></p>'
+                '<table style="border-collapse:collapse;width:100%;font-size:13px;">'
+                '<thead><tr style="background:#f5f5f5;font-weight:600;">'
+                '<th style="padding:5px 10px;text-align:left;">SKU</th>'
+                '<th style="padding:5px 10px;">Product Name</th>'
+                '<th style="padding:5px 10px;text-align:center;">Qty</th>'
+                '<th style="padding:5px 10px;text-align:right;">Unit Price</th>'
+                '</tr></thead>'
+                f'<tbody>{rows}</tbody></table>'
+            )
+            order.sudo().message_post(body=msg)
+
+        return order, missing_lines
 
     # -------------------------------------------------------------------------
     # Per-order processing
@@ -287,6 +330,7 @@ class NetoConnector(models.AbstractModel):
             'neto_username': username,
             'neto_order_date': neto_order_date,
             'neto_grand_total': grand_total,
+            'neto_order_status': order_status,
             'store_id': store.id,
         }
 
@@ -330,8 +374,10 @@ class NetoConnector(models.AbstractModel):
             partner, partner_created = self._get_or_create_partner(
                 username, billing_name, billing_email, billing_address
             )
-            sale_order = self._create_sale_order(order_data, partner, store)
+            sale_order, missing_lines = self._create_sale_order(order_data, partner, store)
             line_count = len(sale_order.order_line)
+
+            missing_skus_text = ', '.join(m['sku'] for m in missing_lines) if missing_lines else False
 
             if line_count == 0:
                 SyncLog.create({
@@ -341,6 +387,7 @@ class NetoConnector(models.AbstractModel):
                     'partner_id': partner.id,
                     'partner_created': partner_created,
                     'line_count': 0,
+                    'missing_skus': missing_skus_text,
                     'skip_reason': 'No matching SKUs found in Odoo',
                 })
                 return
@@ -352,6 +399,7 @@ class NetoConnector(models.AbstractModel):
                 'partner_id': partner.id,
                 'partner_created': partner_created,
                 'line_count': line_count,
+                'missing_skus': missing_skus_text,
             })
 
         except Exception as exc:
@@ -362,7 +410,7 @@ class NetoConnector(models.AbstractModel):
     # Per-store sync
     # -------------------------------------------------------------------------
 
-    def _sync_store(self, store, hours_back=None):
+    def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None):
         if not store.api_key or not store.store_url:
             _logger.warning(
                 'Neto connector: store "%s" missing api_key or store_url — skipping.',
@@ -370,7 +418,10 @@ class NetoConnector(models.AbstractModel):
             )
             return
 
-        if hours_back is not None:
+        if since_dt:
+            # Explicit datetime passed in (e.g. from date range wizard)
+            pass
+        elif hours_back is not None:
             since_dt = datetime.now(timezone.utc) - timedelta(hours=hours_back)
         elif store.last_sync_date:
             since_dt = store.last_sync_date.replace(tzinfo=timezone.utc)
@@ -378,11 +429,13 @@ class NetoConnector(models.AbstractModel):
             since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
 
         _logger.info(
-            'Neto sync [%s]: fetching orders updated since %s', store.name, since_dt
+            'Neto sync [%s]: fetching orders updated since %s%s',
+            store.name, since_dt,
+            f' until {until_dt}' if until_dt else '',
         )
 
         try:
-            orders = self._fetch_orders(store, since_dt)
+            orders = self._fetch_orders(store, since_dt, until_dt=until_dt)
         except Exception as exc:
             _logger.error(
                 'Neto sync [%s]: _fetch_orders raised unexpectedly — %s', store.name, exc

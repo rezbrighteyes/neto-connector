@@ -11,6 +11,7 @@
                   decoration-danger="state == 'error'">
                 <field name="sync_date"/>
                 <field name="neto_order_id"/>
+                <field name="neto_order_status" optional="show"/>
                 <field name="neto_username"/>
                 <field name="neto_grand_total" string="Grand Total"/>
                 <field name="state" widget="badge"
@@ -19,6 +20,7 @@
                        decoration-danger="state == 'error'"/>
                 <field name="store_id" optional="show"/>
                 <field name="skip_reason" optional="hide"/>
+                <field name="missing_skus" optional="show"/>
                 <field name="sale_order_id"/>
                 <field name="partner_id"/>
                 <field name="line_count"/>
@@ -35,6 +37,7 @@
                     <group>
                         <group string="Order Info">
                             <field name="neto_order_id"/>
+                            <field name="neto_order_status"/>
                             <field name="neto_username"/>
                             <field name="neto_order_date"/>
                             <field name="neto_grand_total"/>
@@ -55,6 +58,8 @@
                     <group>
                         <field name="skip_reason" invisible="state != 'skipped'"/>
                         <field name="error_message" invisible="state != 'error'" widget="text"/>
+                        <field name="missing_skus" invisible="not missing_skus" widget="text"
+                               string="Missing SKUs (not added to order)"/>
                     </group>
                 </sheet>
             </form>

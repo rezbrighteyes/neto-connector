@@ -11,6 +11,7 @@ class NetoSyncLog(models.Model):
     neto_username = fields.Char(string='Neto Username')
     neto_order_date = fields.Datetime(string='Order Date')
     neto_grand_total = fields.Float(string='Grand Total', digits=(16, 2))
+    neto_order_status = fields.Char(string='Neto Status')
     state = fields.Selection(
         selection=[
             ('success', 'Success'),
@@ -23,6 +24,7 @@ class NetoSyncLog(models.Model):
     )
     skip_reason = fields.Char(string='Skip Reason')
     error_message = fields.Text(string='Error Message')
+    missing_skus = fields.Text(string='Missing SKUs')
     store_id = fields.Many2one('neto.store', string='Store', ondelete='set null', index=True)
     sale_order_id = fields.Many2one('sale.order', string='Sale Order', ondelete='set null')
     partner_id = fields.Many2one('res.partner', string='Partner', ondelete='set null')
