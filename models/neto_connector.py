@@ -28,7 +28,8 @@ _INTERNAL_EMAIL_DOMAIN = '@brighteyes.net.au'
 # Neto statuses that should cancel the Odoo order
 _CANCEL_STATUSES = frozenset({'Cancelled', 'Declined'})
 
-# Neto statuses that are dispatched (confirmed + flagged in neto_order_status)
+# Neto statuses that should lock (done) the Odoo order
+# Requires sale_management module to be installed (adds 'done' to sale.order.state)
 _DISPATCHED_STATUSES = frozenset({'Dispatched'})
 
 # GetItem OutputSelectors we need for product creation
@@ -517,17 +518,17 @@ class NetoConnector(models.AbstractModel):
         Uses direct write() to avoid triggering stock.move creation (which fails
         with 'stock.move has no attribute group_id' on this instance).
 
-        Note: 'done' (locked) state is only available when the sale_management
-        module is installed. Since it is not installed here, Dispatched orders
-        are confirmed ('sale') and identifiable via neto_order_status='Dispatched'.
+        Requires sale_management module for 'done' (Locked) state.
 
         State mapping:
           Cancelled / Declined  -> 'cancel'
-          Dispatched            -> 'sale'  (confirmed; flagged by neto_order_status)
-          Everything else       -> 'sale'  (confirmed Sales Order)
+          Dispatched            -> 'done'   (Locked — requires sale_management)
+          Everything else       -> 'sale'   (confirmed Sales Order)
         """
         if order_status in _CANCEL_STATUSES:
             target_state = 'cancel'
+        elif order_status in _DISPATCHED_STATUSES:
+            target_state = 'done'
         else:
             target_state = 'sale'
 
@@ -538,7 +539,7 @@ class NetoConnector(models.AbstractModel):
         order.sudo().write(writes)
 
         # Restore Neto prices after state change (Odoo may reprice on confirm)
-        if target_state == 'sale':
+        if target_state in ('sale', 'done'):
             for ol in order.order_line:
                 neto = line_prices.get(ol.product_id.id)
                 if neto is not None:
@@ -765,8 +766,8 @@ class NetoConnector(models.AbstractModel):
 
         if order_status in _DISPATCHED_STATUSES:
             msg_parts.append(Markup(
-                '<p>&#128666; <strong>This order has been dispatched in Neto.</strong> '
-                'It is confirmed in Odoo. Neto Status: <em>Dispatched</em>.</p>'
+                '<p>&#128666; <strong>This order has been dispatched in Neto</strong> '
+                'and has been locked (Done) in Odoo.</p>'
             ))
 
         if autocreated_lines:
