@@ -4,7 +4,6 @@ from odoo import models, fields
 
 # ---------------------------------------------------------------------------
 # Neto status → badge decoration mapping
-# Used in the view via neto_status_decoration computed field
 # ---------------------------------------------------------------------------
 _STATUS_DECORATION = {
     # green
@@ -48,16 +47,25 @@ class SaleOrder(models.Model):
         default=False,
         help='Flagged True for zero-value internal transfers and '
              'BrightEyes internal replenishment orders. '
-             'These are fully synced but can be filtered out of '
-             'standard sales reports.',
+             'Fully synced but can be filtered out of sales reports.',
+    )
+    neto_internal_label = fields.Char(
+        string='Internal Label',
+        compute='_compute_neto_internal_label',
+        store=False,
+        help='Returns "Internal" when neto_internal is True, else empty string. '
+             'Used for the header badge (boolean fields cannot use widget=badge in Odoo 18).',
     )
     neto_status_decoration = fields.Char(
         string='Neto Status Decoration',
         compute='_compute_neto_status_decoration',
         store=False,
-        help='Bootstrap decoration class (success/info/warning/danger/muted) '
-             'derived from neto_order_status for badge colouring.',
+        help='Bootstrap decoration class derived from neto_order_status for badge colouring.',
     )
+
+    def _compute_neto_internal_label(self):
+        for order in self:
+            order.neto_internal_label = 'Internal' if order.neto_internal else ''
 
     def _compute_neto_status_decoration(self):
         for order in self:
