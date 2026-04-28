@@ -724,8 +724,9 @@ class NetoConnector(models.AbstractModel):
                     'journal_id': journal.id,
                 })
                 payment.sudo().action_post()
+                payment.sudo().invalidate_recordset()
 
-                payment_lines = payment.line_ids.filtered(
+                payment_lines = payment.move_id.line_ids.filtered(
                     lambda l: l.account_id.account_type == 'asset_receivable'
                 )
                 invoice_lines = invoice.line_ids.filtered(
