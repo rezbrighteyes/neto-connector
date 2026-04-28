@@ -4,24 +4,9 @@ import requests
 from datetime import datetime, timezone
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
+from .neto_connector import GET_ORDER_OUTPUT_SELECTOR
 
 _logger = logging.getLogger(__name__)
-
-# Must stay in sync with the OutputSelector in neto_connector.py
-_OUTPUT_SELECTOR = [
-    'OrderID', 'Username', 'Email',
-    'BillAddress',
-    'ShipAddress',
-    'GrandTotal', 'SurchargeTotal', 'ShippingTotal',
-    'OrderStatus',
-    'OrderLine', 'OrderLine.SKU',
-    'OrderLine.ProductName', 'OrderLine.UnitPrice',
-    'OrderLine.Quantity', 'OrderLine.PercentDiscount',
-    'OrderLine.ProductDiscount',
-    'DatePlaced', 'DateUpdated',
-    'DatePaid',
-    # OrderPayment removed — PaymentMethodName now fetched via GetPayment API
-]
 
 
 class NetoSyncWizard(models.TransientModel):
@@ -58,7 +43,6 @@ class NetoSyncWizard(models.TransientModel):
 
     @api.onchange('order_id_input')
     def _onchange_order_id_input(self):
-        """Clear date fields if a specific order ID is entered."""
         if self.order_id_input:
             self.date_from = False
             self.date_to = False
@@ -87,7 +71,7 @@ class NetoSyncWizard(models.TransientModel):
         payload = {
             'Filter': {
                 'OrderID': [order_id],
-                'OutputSelector': _OUTPUT_SELECTOR,
+                'OutputSelector': GET_ORDER_OUTPUT_SELECTOR,
             }
         }
         _logger.info('Neto single-order sync [%s]: fetching order %s', store.name, order_id)
@@ -114,21 +98,13 @@ class NetoSyncWizard(models.TransientModel):
         return orders[0]
 
     def _patch_existing_order(self, sale_order, order_data, store):
-        """Patch Neto-sourced fields on an existing SO without touching order lines.
-
-        Updates: neto_date_paid, neto_payment_method, partner_shipping_id.
-        Safe to run on confirmed/locked orders.
-        """
+        """Patch Neto-sourced fields on an existing SO without touching order lines."""
         connector = self.env['neto.connector']
         order_id = order_data.get('OrderID', '')
 
-        # DatePaid
-        date_paid = connector._parse_neto_datetime(order_data.get('DatePaid'))
+        payment_method, amount_paid, date_paid, is_partial = \
+            connector._get_payment_info_from_order(order_data, order_id)
 
-        # Payment method — via GetPayment API (OrderPayment block on GetOrder is unreliable)
-        payment_method = connector._fetch_payment_method(store, order_id)
-
-        # Shipping address
         ship_partner = connector._get_or_create_ship_address(
             sale_order.partner_id, order_data
         )
@@ -165,7 +141,6 @@ class NetoSyncWizard(models.TransientModel):
         order_data = self._fetch_raw_order(store, order_id)
 
         if existing and self.force_resync:
-            # Patch only — don't create a duplicate
             self._patch_existing_order(existing, order_data, store)
             self.env.cr.commit()
             return {
@@ -176,7 +151,6 @@ class NetoSyncWizard(models.TransientModel):
                 'target': 'current',
             }
 
-        # New order — full sync
         connector = self.env['neto.connector']
         synced_ids = set()
         connector._process_order(order_data, store, synced_ids)
