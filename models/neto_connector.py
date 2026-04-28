@@ -644,20 +644,39 @@ class NetoConnector(models.AbstractModel):
 
             neto_price_incl = float(line.get('UnitPrice') or 0)
             neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
+            qty = float(line.get('Quantity') or 1)
 
+            # ---------------------------------------------------------------
+            # Discount % calculation
+            #
+            # Neto PercentDiscount is already a per-unit percentage (e.g. 20.00
+            # means 20% off the unit price regardless of qty). Use it directly.
+            #
+            # Fallback: if PercentDiscount is absent/zero, back-calculate from
+            # ProductDiscount (a flat dollar amount for the whole line).
+            # We must divide by (unit_price_incl * qty) — NOT just unit_price —
+            # because ProductDiscount covers the entire line, not one unit.
+            # ---------------------------------------------------------------
             percent_discount = float(line.get('PercentDiscount') or 0)
             if not percent_discount:
                 product_discount_amt = float(line.get('ProductDiscount') or 0)
-                if product_discount_amt and neto_price_incl:
+                line_total_incl = neto_price_incl * qty
+                if product_discount_amt and line_total_incl:
                     percent_discount = round(
-                        product_discount_amt / neto_price_incl * 100, 4
+                        product_discount_amt / line_total_incl * 100, 4
                     )
+
+            _logger.debug(
+                'Neto sync: order %s  SKU=%s  qty=%.0f  unit_incl=%.4f  '
+                'unit_excl=%.4f  disc%%=%.4f',
+                order_id, sku, qty, neto_price_incl, neto_price_excl, percent_discount,
+            )
 
             try:
                 OrderLine.create({
                     'order_id': order.id,
                     'product_id': product.id,
-                    'product_uom_qty': float(line.get('Quantity') or 1),
+                    'product_uom_qty': qty,
                     'price_unit': neto_price_excl,
                     'discount': percent_discount,
                     'name': product.name,
