@@ -9,26 +9,45 @@
         <field name="arch" type="xml">
             <!-- Neto badges inside the header statusbar -->
             <xpath expr="//header" position="inside">
+                <!-- Neto Order ID badge (always blue when present) -->
                 <field name="neto_order_id"
                        readonly="1"
                        invisible="not neto_order_id"
                        widget="badge"
                        decoration-info="neto_order_id != False"
                        string="Neto Order"/>
+
+                <!--
+                    Neto Status badge — colour driven by neto_status_decoration.
+                    Odoo badge widget supports decoration-* attrs evaluated at render
+                    time; we map each known status to its colour via the computed field.
+                -->
+                <field name="neto_status_decoration" invisible="1"/>
                 <field name="neto_order_status"
                        readonly="1"
                        invisible="not neto_order_status"
                        widget="badge"
-                       decoration-success="neto_order_status == 'Pick'"
-                       decoration-warning="neto_order_status == 'New'"
-                       decoration-danger="neto_order_status == 'Cancelled'"
+                       decoration-success="neto_status_decoration == 'success'"
+                       decoration-info="neto_status_decoration == 'info'"
+                       decoration-warning="neto_status_decoration == 'warning'"
+                       decoration-danger="neto_status_decoration == 'danger'"
                        string=""/>
+
+                <!-- Internal order indicator -->
+                <field name="neto_internal"
+                       readonly="1"
+                       invisible="not neto_internal"
+                       widget="badge"
+                       decoration-warning="neto_internal == True"
+                       string="Internal"/>
             </xpath>
+
             <!-- Neto fields in Other Info tab -->
             <group name="sales_person" position="inside">
-                <field name="neto_order_id"      readonly="1" string="Neto Order ID"/>
-                <field name="neto_order_status"  readonly="1" string="Neto Status"/>
-                <field name="neto_date_paid"     readonly="1" string="Date Paid"
+                <field name="neto_order_id"       readonly="1" string="Neto Order ID"/>
+                <field name="neto_order_status"   readonly="1" string="Neto Status"/>
+                <field name="neto_internal"        readonly="1" string="Internal Order"/>
+                <field name="neto_date_paid"       readonly="1" string="Date Paid"
                        invisible="not neto_date_paid"/>
                 <field name="neto_payment_method" readonly="1" string="Payment Method"
                        invisible="not neto_payment_method"/>
@@ -36,7 +55,7 @@
         </field>
     </record>
 
-    <!-- List view: Neto Order ID, Date Paid, Payment Method -->
+    <!-- List view: Neto Order ID, Status, Date Paid, Payment Method -->
     <record id="sale_order_view_list_neto" model="ir.ui.view">
         <field name="name">sale.order.list.neto</field>
         <field name="model">sale.order</field>
@@ -46,6 +65,14 @@
                 <field name="neto_order_id"
                        string="Neto Order"
                        optional="show"
+                       readonly="1"/>
+                <field name="neto_order_status"
+                       string="Neto Status"
+                       optional="show"
+                       readonly="1"/>
+                <field name="neto_internal"
+                       string="Internal"
+                       optional="hide"
                        readonly="1"/>
                 <field name="date_order"
                        string="Order Date"

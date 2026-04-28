@@ -8,7 +8,6 @@ from odoo import models, fields
 
 _logger = logging.getLogger(__name__)
 
-ALLOWED_STATUSES = frozenset({'New', 'Pick', 'Pack', 'Dispatched', 'Pending', 'New Backorder'})
 _API_ACTION = 'GetOrder'
 _GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for Odoo
 _SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
@@ -22,6 +21,15 @@ _NOTE_SKU_EXACT    = frozenset({'TEXT_NOTE'})
 
 # Suffix appended to auto-created product names so they are easy to spot
 _NETO_UNSYNCED_SUFFIX = '[NETO-UNSYNCED]'
+
+# Internal email domain — orders from this domain are synced but flagged
+_INTERNAL_EMAIL_DOMAIN = '@brighteyes.net.au'
+
+# Neto statuses that should cancel the Odoo order
+_CANCEL_STATUSES = frozenset({'Cancelled', 'Declined'})
+
+# Neto statuses that should lock (done) the Odoo order
+_DISPATCHED_STATUSES = frozenset({'Dispatched'})
 
 # GetItem OutputSelectors we need for product creation
 _GETITEM_OUTPUT = [
@@ -99,7 +107,6 @@ class NetoConnector(models.AbstractModel):
            to the PaymentMethod field on the GetOrder response itself.
 
         Returns empty string on any error so the sync never fails because of this.
-        Ref: https://developers.maropost.com/documentation/engineers/api-documentation/payments/getpayment
         """
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
@@ -127,7 +134,6 @@ class NetoConnector(models.AbstractModel):
             )
             return self._payment_method_from_order(order_data, order_id)
 
-        # Always log the raw body at INFO level so we can diagnose filter issues
         _logger.info(
             'Neto sync: GetPayment raw response for order %s: %s',
             order_id, str(body)[:2000],
@@ -160,12 +166,7 @@ class NetoConnector(models.AbstractModel):
         return method
 
     def _payment_method_from_order(self, order_data, order_id):
-        """Extract PaymentMethod directly from the GetOrder response dict.
-
-        Neto includes a top-level PaymentMethod key on every order.  This is
-        the correct fallback for account/wholesale customers who pay by EFT or
-        on terms and therefore have no GetPayment record at order time.
-        """
+        """Extract PaymentMethod directly from the GetOrder response dict."""
         if not order_data:
             return ''
         method = (order_data.get('PaymentMethod') or '').strip()
@@ -181,17 +182,7 @@ class NetoConnector(models.AbstractModel):
         return method
 
     def _get_or_create_ship_address(self, partner, order_data):
-        """Return a child delivery address partner for this order's ShipAddress fields.
-
-        Neto returns shipping address as flat top-level keys when 'ShipAddress'
-        OutputSelector is requested:
-            ShipFirstName, ShipLastName, ShipCompany,
-            ShipStreetLine1, ShipStreetLine2,
-            ShipCity, ShipState, ShipPostCode, ShipCountry, ShipPhone
-        There is no nested ShipAddress dict.
-
-        We match on street + postcode to avoid creating duplicates on re-sync.
-        """
+        """Return a child delivery address partner for this order's ShipAddress fields."""
         Partner = self.env['res.partner'].sudo()
 
         first   = (order_data.get('ShipFirstName') or '').strip()
@@ -300,30 +291,16 @@ class NetoConnector(models.AbstractModel):
     def _get_or_create_product_from_neto(self, store, sku, line_data):
         """Look up SKU in Odoo; if missing, call GetItem and create a placeholder product.
 
-        Returns (product, was_created) where was_created=True means a new product
-        was auto-created and should be flagged in the chatter.
-
-        The created product has:
-          - Name:              "{Neto Name} [NETO-UNSYNCED]"
-          - default_code:      SKU
-          - barcode:           UPC from Neto (if present)
-          - list_price:        DefaultPrice from Neto (ex-GST)
-          - standard_price:    CostPrice from Neto
-          - type:              'consu'  (consumable — no stock moves blocking confirm)
-          - sale_ok:           True
-          - active:            True
+        Returns (product, was_created).
         """
         Product = self.env['product.product'].sudo()
 
-        # Double-check — may have been created by a parallel line on this order
         product = Product.search([('default_code', '=', sku)], limit=1)
         if product:
             return product, False
 
-        # Fetch from Neto
         item = self._fetch_neto_item(store, sku)
 
-        # Build name — fallback chain: Neto Name → line ProductName → SKU
         if item and item.get('Name'):
             base_name = item['Name'].strip()
         elif line_data.get('ProductName'):
@@ -333,7 +310,6 @@ class NetoConnector(models.AbstractModel):
 
         product_name = f"{base_name} {_NETO_UNSYNCED_SUFFIX}"
 
-        # Price — DefaultPrice from Neto is GST-inclusive when TaxInclusive=True
         list_price = 0.0
         if item:
             raw_price = float(item.get('DefaultPrice') or 0)
@@ -343,7 +319,6 @@ class NetoConnector(models.AbstractModel):
             elif raw_price:
                 list_price = round(raw_price, 4)
 
-        # Fallback: use the order line UnitPrice (also GST-inclusive)
         if not list_price:
             line_price_incl = float(line_data.get('UnitPrice') or 0)
             list_price = round(line_price_incl / _GST_DIVISOR, 4)
@@ -361,13 +336,13 @@ class NetoConnector(models.AbstractModel):
             weight = round(float(item.get('ShippingWeight') or 0), 4)
 
         vals = {
-            'name':          product_name,
-            'default_code':  sku,
-            'type':          'consu',
-            'sale_ok':       True,
-            'purchase_ok':   True,
-            'active':        True,
-            'list_price':    list_price,
+            'name':           product_name,
+            'default_code':   sku,
+            'type':           'consu',
+            'sale_ok':        True,
+            'purchase_ok':    True,
+            'active':         True,
+            'list_price':     list_price,
             'standard_price': cost_price,
         }
         if barcode:
@@ -415,8 +390,6 @@ class NetoConnector(models.AbstractModel):
                     'ShipAddress',
                     'GrandTotal', 'SurchargeTotal', 'ShippingTotal',
                     'OrderStatus',
-                    # PaymentMethod on GetOrder is the fallback for account/EFT orders
-                    # that have no GetPayment record (Liaise International wholesale)
                     'PaymentMethod',
                     'OrderLine', 'OrderLine.SKU',
                     'OrderLine.ProductName', 'OrderLine.UnitPrice',
@@ -538,7 +511,7 @@ class NetoConnector(models.AbstractModel):
     # Order creation
     # -------------------------------------------------------------------------
 
-    def _create_sale_order(self, order_data, partner, store):
+    def _create_sale_order(self, order_data, partner, store, neto_internal=False):
         Order = self.env['sale.order'].sudo()
         OrderLine = self.env['sale.order.line'].sudo()
         Product = self.env['product.product'].sudo()
@@ -550,13 +523,8 @@ class NetoConnector(models.AbstractModel):
             or fields.Datetime.now()
         )
 
-        # --- DatePaid (top-level on GetOrder response) ---
         date_paid = self._parse_neto_datetime(order_data.get('DatePaid'))
-
-        # --- Payment method: GetPayment first, fall back to GetOrder PaymentMethod ---
         payment_method = self._fetch_payment_method(store, order_id, order_data=order_data)
-
-        # --- Shipping delivery address child partner ---
         ship_partner = self._get_or_create_ship_address(partner, order_data)
 
         order_status = order_data.get('OrderStatus', '') or ''
@@ -566,6 +534,7 @@ class NetoConnector(models.AbstractModel):
             'partner_shipping_id':  ship_partner.id,
             'neto_order_id':        order_id,
             'neto_order_status':    order_status,
+            'neto_internal':        neto_internal,
             'date_order':           date_order,
             'warehouse_id':         store.warehouse_id.id,
             'company_id':           store.company_id.id,
@@ -582,9 +551,9 @@ class NetoConnector(models.AbstractModel):
             raw_lines = [raw_lines]
 
         line_prices = {}
-        missing_lines = []       # lines that could not be auto-created
-        autocreated_lines = []   # lines where product was auto-created from Neto
-        note_lines = []          # TEXT_NOTE lines collected for FYI chatter section
+        missing_lines = []
+        autocreated_lines = []
+        note_lines = []
 
         for line in raw_lines:
             sku = (line.get('SKU') or line.get('Sku') or '').strip()
@@ -594,7 +563,6 @@ class NetoConnector(models.AbstractModel):
                 )
                 continue
 
-            # TEXT_NOTE — collect for FYI chatter section, do not add to order lines
             if self._is_note_sku(sku):
                 note_text = (line.get('ProductName') or '').strip()
                 _logger.info(
@@ -604,7 +572,6 @@ class NetoConnector(models.AbstractModel):
                 note_lines.append(note_text)
                 continue
 
-            # DS_* drop-ship lines — silently dropped
             if self._is_internal_sku(sku):
                 _logger.info(
                     'Neto sync: order %s — silently dropped internal SKU "%s"',
@@ -612,7 +579,6 @@ class NetoConnector(models.AbstractModel):
                 )
                 continue
 
-            # Try existing product first, then auto-create from Neto if missing
             product = Product.search([('default_code', '=', sku)], limit=1)
             was_autocreated = False
             if not product:
@@ -621,7 +587,6 @@ class NetoConnector(models.AbstractModel):
                 )
 
             if not product:
-                # GetItem also failed — record as truly missing
                 _logger.warning(
                     'Neto sync: SKU "%s" could not be found or created for order %s — skipping line',
                     sku, order_id,
@@ -646,17 +611,6 @@ class NetoConnector(models.AbstractModel):
             neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
             qty = float(line.get('Quantity') or 1)
 
-            # ---------------------------------------------------------------
-            # Discount % calculation
-            #
-            # Neto PercentDiscount is already a per-unit percentage (e.g. 20.00
-            # means 20% off the unit price regardless of qty). Use it directly.
-            #
-            # Fallback: if PercentDiscount is absent/zero, back-calculate from
-            # ProductDiscount (a flat dollar amount for the whole line).
-            # We must divide by (unit_price_incl * qty) — NOT just unit_price —
-            # because ProductDiscount covers the entire line, not one unit.
-            # ---------------------------------------------------------------
             percent_discount = float(line.get('PercentDiscount') or 0)
             if not percent_discount:
                 product_discount_amt = float(line.get('ProductDiscount') or 0)
@@ -738,35 +692,88 @@ class NetoConnector(models.AbstractModel):
                         order_id, sh_exc,
                     )
 
-        # Confirm order — catch broadly so staging-only issues (stock.move, group_id, etc.)
-        # leave the order as a clean draft rather than raising noisy tracebacks.
-        try:
-            order.action_confirm()
-            for ol in order.order_line:
-                neto = line_prices.get(ol.product_id.id)
-                if neto is not None:
-                    price, disc = neto
-                    writes = {}
-                    if ol.price_unit != price:
-                        writes['price_unit'] = price
-                    if ol.discount != disc:
-                        writes['discount'] = disc
-                    if writes:
-                        ol.sudo().write(writes)
-            if date_order:
-                order.sudo().write({'date_order': date_order})
-        except Exception as confirm_exc:
-            _logger.info(
-                'Neto sync: order %s left as draft (action_confirm skipped: %s)',
-                order_id, confirm_exc,
-            )
-            if date_order:
-                order.sudo().write({'date_order': date_order})
+        # --- Confirm order (unless it should be cancelled) ---
+        if order_status in _CANCEL_STATUSES:
+            # Create lines first so the record is meaningful, then cancel
+            try:
+                order.action_confirm()
+            except Exception:
+                pass  # draft is fine — we'll cancel below regardless
+            try:
+                order.action_cancel()
+                _logger.info(
+                    'Neto sync: order %s cancelled (Neto status: %s)',
+                    order_id, order_status,
+                )
+            except Exception as cancel_exc:
+                _logger.warning(
+                    'Neto sync: could not cancel order %s — %s', order_id, cancel_exc
+                )
+        else:
+            try:
+                order.action_confirm()
+                for ol in order.order_line:
+                    neto = line_prices.get(ol.product_id.id)
+                    if neto is not None:
+                        price, disc = neto
+                        writes = {}
+                        if ol.price_unit != price:
+                            writes['price_unit'] = price
+                        if ol.discount != disc:
+                            writes['discount'] = disc
+                        if writes:
+                            ol.sudo().write(writes)
+                if date_order:
+                    order.sudo().write({'date_order': date_order})
+
+                # Lock dispatched orders
+                if order_status in _DISPATCHED_STATUSES:
+                    try:
+                        order.action_lock()
+                        _logger.info(
+                            'Neto sync: order %s locked (Neto status: %s)',
+                            order_id, order_status,
+                        )
+                    except Exception as lock_exc:
+                        _logger.info(
+                            'Neto sync: could not lock order %s — %s', order_id, lock_exc
+                        )
+            except Exception as confirm_exc:
+                _logger.info(
+                    'Neto sync: order %s left as draft (action_confirm skipped: %s)',
+                    order_id, confirm_exc,
+                )
+                if date_order:
+                    order.sudo().write({'date_order': date_order})
 
         # -----------------------------------------------------------------------
-        # Post chatter message — auto-created products (info) + missing (warning) + notes
+        # Post chatter message
         # -----------------------------------------------------------------------
         msg_parts = []
+
+        # Internal order notice
+        if neto_internal:
+            msg_parts.append(Markup(
+                '<p>&#128274; <strong>This is an internal order</strong> '
+                '(zero-value transfer or BrightEyes replenishment). '
+                'It is fully synced and visible to staff but is flagged '
+                '<em>neto_internal = True</em> so it can be excluded '
+                'from standard sales reports.</p>'
+            ))
+
+        # Cancelled notice
+        if order_status in _CANCEL_STATUSES:
+            msg_parts.append(Markup(
+                '<p>&#10060; <strong>This order was automatically cancelled</strong> '
+                'because its Neto status is <em>{status}</em>.</p>'
+            ).format(status=order_status))
+
+        # Dispatched notice
+        if order_status in _DISPATCHED_STATUSES:
+            msg_parts.append(Markup(
+                '<p>&#128666; <strong>This order has been dispatched in Neto</strong> '
+                'and has been locked in Odoo.</p>'
+            ))
 
         if autocreated_lines:
             rows = Markup('').join(
@@ -847,7 +854,7 @@ class NetoConnector(models.AbstractModel):
     # -------------------------------------------------------------------------
 
     def _process_order(self, order_data, store, synced_ids):
-        """Process a single Neto order dict."""
+        """Process a single Neto order dict — ALL orders are synced."""
         SyncLog = self.env['neto.sync.log'].sudo()
 
         order_id = order_data.get('OrderID', '')
@@ -858,12 +865,12 @@ class NetoConnector(models.AbstractModel):
         neto_order_date = self._parse_neto_datetime(order_data.get('DatePlaced'))
 
         base_vals = {
-            'neto_order_id': order_id,
-            'neto_username': username,
-            'neto_order_date': neto_order_date,
-            'neto_grand_total': grand_total,
+            'neto_order_id':     order_id,
+            'neto_username':     username,
+            'neto_order_date':   neto_order_date,
+            'neto_grand_total':  grand_total,
             'neto_order_status': order_status,
-            'store_id': store.id,
+            'store_id':          store.id,
         }
 
         try:
@@ -875,57 +882,36 @@ class NetoConnector(models.AbstractModel):
                 return
             synced_ids.add(order_id)
 
-            if grand_total == 0:
-                SyncLog.create({
-                    **base_vals,
-                    'state': 'skipped',
-                    'skip_reason': 'Zero-value internal transfer',
-                })
-                return
+            # Determine internal flag — still synced, just tagged
+            neto_internal = (
+                grand_total == 0
+                or _INTERNAL_EMAIL_DOMAIN in billing_email.lower()
+            )
 
-            if '@brighteyes.net.au' in billing_email.lower():
-                SyncLog.create({
-                    **base_vals,
-                    'state': 'skipped',
-                    'skip_reason': 'BrightEyes internal replenishment',
-                })
-                return
-
-            if order_status not in ALLOWED_STATUSES:
-                SyncLog.create({
-                    **base_vals,
-                    'state': 'skipped',
-                    'skip_reason': f'Status not in sync list: {order_status}',
-                })
-                return
+            if neto_internal:
+                if grand_total == 0:
+                    reason = 'Zero-value internal transfer (synced, flagged internal)'
+                else:
+                    reason = 'BrightEyes internal replenishment (synced, flagged internal)'
+                _logger.info('Neto sync: order %s — %s', order_id, reason)
 
             partner, partner_created = self._get_or_create_partner(username, order_data)
-            sale_order, missing_lines = self._create_sale_order(order_data, partner, store)
+            sale_order, missing_lines = self._create_sale_order(
+                order_data, partner, store, neto_internal=neto_internal
+            )
             line_count = len(sale_order.order_line)
-
             missing_skus_text = ', '.join(m['sku'] for m in missing_lines) if missing_lines else False
-
-            if line_count == 0:
-                SyncLog.create({
-                    **base_vals,
-                    'state': 'skipped',
-                    'sale_order_id': sale_order.id,
-                    'partner_id': partner.id,
-                    'partner_created': partner_created,
-                    'line_count': 0,
-                    'missing_skus': missing_skus_text,
-                    'skip_reason': 'No matching SKUs found in Odoo',
-                })
-                return
 
             SyncLog.create({
                 **base_vals,
-                'state': 'success',
-                'sale_order_id': sale_order.id,
-                'partner_id': partner.id,
+                'state':           'success',
+                'sale_order_id':   sale_order.id,
+                'partner_id':      partner.id,
                 'partner_created': partner_created,
-                'line_count': line_count,
-                'missing_skus': missing_skus_text,
+                'line_count':      line_count,
+                'missing_skus':    missing_skus_text,
+                # Informational note if internal
+                'skip_reason':     reason if neto_internal else False,
             })
 
         except Exception as exc:
