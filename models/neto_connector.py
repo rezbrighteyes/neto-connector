@@ -533,7 +533,7 @@ class NetoConnector(models.AbstractModel):
         if credit_limit is not None:
             try:
                 credit_limit_float = float(credit_limit)
-                if credit_limit_float != 0.0 and 'credit_limit' in self.env['res.partner']._fields:
+                if 'credit_limit' in self.env['res.partner']._fields:
                     vals['credit_limit'] = credit_limit_float
             except (ValueError, TypeError):
                 pass
