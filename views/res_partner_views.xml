@@ -8,8 +8,23 @@
         <field name="arch" type="xml">
             <notebook position="inside">
                 <page string="Neto" name="neto_tab">
-                    <group>
-                        <field name="neto_username"/>
+                    <div class="alert alert-warning" invisible="not neto_on_credit_hold">
+                        &#9888;&#65039; This customer is on credit hold in Neto.
+                    </div>
+                    <group string="Neto Identity">
+                        <field name="neto_username" readonly="1"/>
+                        <field name="neto_classification"/>
+                    </group>
+                    <group string="Credit (from Neto)">
+                        <field name="neto_account_balance" readonly="1"/>
+                        <field name="neto_available_credit" readonly="1"/>
+                        <field name="credit_limit"/>
+                        <field name="neto_on_credit_hold"/>
+                    </group>
+                    <group string="Terms &amp; Manager">
+                        <field name="property_payment_term_id"/>
+                        <field name="user_id" string="Sales Representative"/>
+                        <field name="neto_last_sync" readonly="1"/>
                     </group>
                 </page>
             </notebook>

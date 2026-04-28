@@ -459,14 +459,142 @@ class NetoConnector(models.AbstractModel):
         return orders
 
     # -------------------------------------------------------------------------
+    # Customer sync
+    # -------------------------------------------------------------------------
+
+    def _sync_customer(self, store, partner, username):
+        """Pull customer credit/account data from Neto and write it to the Odoo partner.
+
+        Called after partner is found or created. Never raises — logs WARNING and returns.
+        """
+        url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
+        headers = {
+            'Content-Type': 'application/json',
+            'NETOAPI_ACTION': 'GetCustomer',
+            'NETOAPI_KEY': store.api_key,
+            'Accept': 'application/json',
+        }
+        payload = {
+            'Filter': {
+                'Username': [username],
+                'OutputSelector': [
+                    'Username',
+                    'AccountBalance',
+                    'AvailableCredit',
+                    'CreditLimit',
+                    'OnCreditHold',
+                    'DefaultInvoiceTerms',
+                    'AccountManager',
+                    'Classification2',
+                ],
+            }
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            _logger.warning(
+                'Neto sync: GetCustomer failed for username %s — %s', username, exc
+            )
+            return
+
+        if 'GetCustomerResponse' in body:
+            customers = body['GetCustomerResponse'].get('Customer', [])
+        else:
+            customers = body.get('Customer', [])
+
+        if isinstance(customers, dict):
+            customers = [customers]
+        customers = customers or []
+
+        if not customers:
+            _logger.warning(
+                'Neto sync: GetCustomer returned no data for username %s', username
+            )
+            return
+
+        customer = customers[0]
+        vals = {'neto_last_sync': fields.Datetime.now()}
+
+        account_balance = customer.get('AccountBalance')
+        if account_balance is not None:
+            vals['neto_account_balance'] = str(account_balance)
+
+        available_credit = customer.get('AvailableCredit')
+        if available_credit is not None:
+            vals['neto_available_credit'] = str(available_credit)
+
+        credit_limit = customer.get('CreditLimit')
+        if credit_limit is not None:
+            try:
+                credit_limit_float = float(credit_limit)
+                if credit_limit_float != 0.0:
+                    vals['credit_limit'] = credit_limit_float
+            except (ValueError, TypeError):
+                pass
+
+        on_hold = customer.get('OnCreditHold')
+        if on_hold is not None:
+            if isinstance(on_hold, bool):
+                vals['neto_on_credit_hold'] = on_hold
+            else:
+                vals['neto_on_credit_hold'] = str(on_hold).lower() in ('true', '1', 'yes')
+
+        invoice_terms = (customer.get('DefaultInvoiceTerms') or '').strip()
+        if invoice_terms:
+            term = self.env['account.payment.term'].sudo().search(
+                [('name', 'ilike', invoice_terms)], limit=1
+            )
+            if term:
+                vals['property_payment_term_id'] = term.id
+            else:
+                _logger.warning(
+                    'Neto sync: payment term "%s" not found for username %s — leaving unchanged',
+                    invoice_terms, username,
+                )
+
+        account_manager = customer.get('AccountManager')
+        if account_manager:
+            if isinstance(account_manager, dict):
+                manager_email = (account_manager.get('Email') or '').strip()
+            else:
+                manager_email = ''
+            if manager_email:
+                user = self.env['res.users'].sudo().search(
+                    [('email', '=ilike', manager_email)], limit=1
+                )
+                if user:
+                    vals['user_id'] = user.id
+                else:
+                    _logger.warning(
+                        'Neto sync: account manager email "%s" not found for username %s — leaving unchanged',
+                        manager_email, username,
+                    )
+
+        classification2 = customer.get('Classification2')
+        if classification2 is not None:
+            vals['neto_classification'] = str(classification2)
+
+        try:
+            partner.sudo().write(vals)
+            _logger.info('Neto sync: GetCustomer synced for username %s', username)
+        except Exception as exc:
+            _logger.warning(
+                'Neto sync: could not write customer fields for username %s — %s',
+                username, exc,
+            )
+
+    # -------------------------------------------------------------------------
     # Partner
     # -------------------------------------------------------------------------
 
-    def _get_or_create_partner(self, username, order_data):
+    def _get_or_create_partner(self, username, order_data, store):
         """Find partner by neto_username or create one from the order's billing fields."""
         Partner = self.env['res.partner'].sudo()
         partner = Partner.search([('neto_username', '=', username)], limit=1)
         if partner:
+            self._sync_customer(store, partner, username)
             return partner, False
 
         first = (order_data.get('BillFirstName') or '').strip()
@@ -518,7 +646,99 @@ class NetoConnector(models.AbstractModel):
             'Neto sync: created partner "%s" (username=%s, email=%s)',
             display_name, username, email,
         )
+        self._sync_customer(store, partner, username)
         return partner, True
+
+    # -------------------------------------------------------------------------
+    # Invoice creation
+    # -------------------------------------------------------------------------
+
+    def _get_payment_journal(self, payment_method):
+        """Return an account.journal for the given payment method name.
+
+        Searches bank/cash journals by name ilike payment_method.
+        Falls back to the first available bank/cash journal if no match.
+        """
+        Journal = self.env['account.journal'].sudo()
+        if payment_method:
+            journal = Journal.search(
+                [('type', 'in', ('bank', 'cash')), ('name', 'ilike', payment_method)],
+                limit=1,
+            )
+            if journal:
+                _logger.info(
+                    'Neto sync: payment journal "%s" selected for method "%s"',
+                    journal.name, payment_method,
+                )
+                return journal
+            _logger.warning(
+                'Neto sync: no journal matching "%s" — using first available bank/cash journal',
+                payment_method,
+            )
+        journal = Journal.search([('type', 'in', ('bank', 'cash'))], limit=1)
+        if journal:
+            _logger.info(
+                'Neto sync: fallback payment journal "%s" selected', journal.name
+            )
+        return journal
+
+    def _create_invoice(self, order, payment_method, date_paid):
+        """Create, post, and optionally pay an invoice for a confirmed sale order.
+
+        Never raises — logs WARNING with order ID on any failure.
+        """
+        try:
+            order.sudo()._create_invoices()
+            if not order.invoice_ids:
+                _logger.warning(
+                    'Neto sync: no invoice created for order %s', order.neto_order_id
+                )
+                return
+            invoice = order.invoice_ids[0]
+            invoice.sudo().write({'invoice_date': order.date_order})
+            invoice.sudo().action_post()
+            _logger.info(
+                'Neto sync: invoice %s posted for order %s',
+                invoice.name, order.neto_order_id,
+            )
+
+            if date_paid and payment_method:
+                journal = self._get_payment_journal(payment_method)
+                if not journal:
+                    _logger.warning(
+                        'Neto sync: no payment journal found for order %s — skipping payment registration',
+                        order.neto_order_id,
+                    )
+                    return
+
+                payment = self.env['account.payment'].sudo().create({
+                    'payment_type': 'inbound',
+                    'partner_type': 'customer',
+                    'partner_id': order.partner_id.id,
+                    'amount': invoice.amount_total,
+                    'date': date_paid,
+                    'journal_id': journal.id,
+                })
+                payment.sudo().action_post()
+
+                payment_lines = payment.line_ids.filtered(
+                    lambda l: l.account_id.account_type == 'asset_receivable'
+                )
+                invoice_lines = invoice.line_ids.filtered(
+                    lambda l: l.account_id.account_type == 'asset_receivable'
+                    and not l.reconciled
+                )
+                (payment_lines + invoice_lines).reconcile()
+                _logger.info(
+                    'Neto sync: payment registered and reconciled for order %s '
+                    '(amount=%.2f, method=%s)',
+                    order.neto_order_id, invoice.amount_total, payment_method,
+                )
+        except Exception as exc:
+            _logger.warning(
+                'Neto sync: could not create invoice/payment for order %s — %s',
+                order.neto_order_id, exc,
+            )
 
     # -------------------------------------------------------------------------
     # Order creation / state management
@@ -755,6 +975,10 @@ class NetoConnector(models.AbstractModel):
             order, order_id, order_status, date_order, line_prices
         )
 
+        # --- Auto-create invoice for confirmed orders ---
+        if final_state == 'sale':
+            self._create_invoice(order, payment_method, date_paid)
+
         # -----------------------------------------------------------------------
         # Post chatter message
         # -----------------------------------------------------------------------
@@ -901,7 +1125,7 @@ class NetoConnector(models.AbstractModel):
                     reason = 'BrightEyes internal replenishment (synced, flagged internal)'
                 _logger.info('Neto sync: order %s — %s', order_id, reason)
 
-            partner, partner_created = self._get_or_create_partner(username, order_data)
+            partner, partner_created = self._get_or_create_partner(username, order_data, store)
             sale_order, missing_lines = self._create_sale_order(
                 order_data, partner, store, neto_internal=neto_internal
             )
