@@ -29,6 +29,7 @@ _INTERNAL_EMAIL_DOMAIN = '@brighteyes.net.au'
 _CANCEL_STATUSES = frozenset({'Cancelled', 'Declined'})
 
 # Neto statuses that should lock (done) the Odoo order
+# action_lock() requires sale_management module — use write({'state': 'done'}) instead
 _DISPATCHED_STATUSES = frozenset({'Dispatched'})
 
 # GetItem OutputSelectors we need for product creation
@@ -692,13 +693,13 @@ class NetoConnector(models.AbstractModel):
                         order_id, sh_exc,
                     )
 
-        # --- Confirm order (unless it should be cancelled) ---
+        # --- Confirm / Cancel / Lock ---
         if order_status in _CANCEL_STATUSES:
-            # Create lines first so the record is meaningful, then cancel
+            # Confirm first so lines are properly validated, then cancel
             try:
                 order.action_confirm()
             except Exception:
-                pass  # draft is fine — we'll cancel below regardless
+                pass  # draft is acceptable — cancel below regardless
             try:
                 order.action_cancel()
                 _logger.info(
@@ -712,6 +713,7 @@ class NetoConnector(models.AbstractModel):
         else:
             try:
                 order.action_confirm()
+                # Restore Neto prices (action_confirm may reprice)
                 for ol in order.order_line:
                     neto = line_prices.get(ol.product_id.id)
                     if neto is not None:
@@ -726,16 +728,18 @@ class NetoConnector(models.AbstractModel):
                 if date_order:
                     order.sudo().write({'date_order': date_order})
 
-                # Lock dispatched orders
+                # Lock dispatched orders using direct state write.
+                # action_lock() requires the sale_management module which may not
+                # be installed — write({'state': 'done'}) works universally.
                 if order_status in _DISPATCHED_STATUSES:
                     try:
-                        order.action_lock()
+                        order.sudo().write({'state': 'done'})
                         _logger.info(
-                            'Neto sync: order %s locked (Neto status: %s)',
+                            'Neto sync: order %s locked/done (Neto status: %s)',
                             order_id, order_status,
                         )
                     except Exception as lock_exc:
-                        _logger.info(
+                        _logger.warning(
                             'Neto sync: could not lock order %s — %s', order_id, lock_exc
                         )
             except Exception as confirm_exc:
@@ -751,7 +755,6 @@ class NetoConnector(models.AbstractModel):
         # -----------------------------------------------------------------------
         msg_parts = []
 
-        # Internal order notice
         if neto_internal:
             msg_parts.append(Markup(
                 '<p>&#128274; <strong>This is an internal order</strong> '
@@ -761,18 +764,16 @@ class NetoConnector(models.AbstractModel):
                 'from standard sales reports.</p>'
             ))
 
-        # Cancelled notice
         if order_status in _CANCEL_STATUSES:
             msg_parts.append(Markup(
                 '<p>&#10060; <strong>This order was automatically cancelled</strong> '
                 'because its Neto status is <em>{status}</em>.</p>'
             ).format(status=order_status))
 
-        # Dispatched notice
         if order_status in _DISPATCHED_STATUSES:
             msg_parts.append(Markup(
                 '<p>&#128666; <strong>This order has been dispatched in Neto</strong> '
-                'and has been locked in Odoo.</p>'
+                'and has been locked (Done) in Odoo.</p>'
             ))
 
         if autocreated_lines:
@@ -882,12 +883,12 @@ class NetoConnector(models.AbstractModel):
                 return
             synced_ids.add(order_id)
 
-            # Determine internal flag — still synced, just tagged
             neto_internal = (
                 grand_total == 0
                 or _INTERNAL_EMAIL_DOMAIN in billing_email.lower()
             )
 
+            reason = False
             if neto_internal:
                 if grand_total == 0:
                     reason = 'Zero-value internal transfer (synced, flagged internal)'
@@ -910,8 +911,7 @@ class NetoConnector(models.AbstractModel):
                 'partner_created': partner_created,
                 'line_count':      line_count,
                 'missing_skus':    missing_skus_text,
-                # Informational note if internal
-                'skip_reason':     reason if neto_internal else False,
+                'skip_reason':     reason,
             })
 
         except Exception as exc:
