@@ -19,11 +19,8 @@ _SHIPPING_SKU  = 'NETO_SHIPPING'   # internal product SKU for shipping lines
 _SKIP_SKU_PREFIXES = (
     'DS_',
     'REPVISIT_',
-    'pack_',
     'p_header_',
     'stand_',
-    'catalogue_',
-    'header_',
 )
 _NOTE_SKU_EXACT = frozenset({'TEXT_NOTE'})
 
