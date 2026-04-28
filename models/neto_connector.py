@@ -29,7 +29,6 @@ _INTERNAL_EMAIL_DOMAIN = '@brighteyes.net.au'
 _CANCEL_STATUSES = frozenset({'Cancelled', 'Declined'})
 
 # Neto statuses that should lock (done) the Odoo order
-# action_lock() requires sale_management module — use write({'state': 'done'}) instead
 _DISPATCHED_STATUSES = frozenset({'Dispatched'})
 
 # GetItem OutputSelectors we need for product creation
@@ -509,8 +508,53 @@ class NetoConnector(models.AbstractModel):
         return partner, True
 
     # -------------------------------------------------------------------------
-    # Order creation
+    # Order creation / state management
     # -------------------------------------------------------------------------
+
+    def _set_order_state(self, order, order_id, order_status, date_order, line_prices):
+        """Set the final state of a synced sale order.
+
+        We use direct write() calls instead of action_confirm() / action_lock()
+        / action_cancel() to avoid triggering stock.move creation, which fails
+        in this environment with 'stock.move has no attribute group_id'.
+
+        State mapping:
+          Cancelled / Declined  -> 'cancel'
+          Dispatched            -> 'done'   (locked)
+          Everything else       -> 'sale'   (confirmed Sales Order)
+        """
+        if order_status in _CANCEL_STATUSES:
+            target_state = 'cancel'
+        elif order_status in _DISPATCHED_STATUSES:
+            target_state = 'done'
+        else:
+            target_state = 'sale'
+
+        writes = {'state': target_state}
+        if date_order:
+            writes['date_order'] = date_order
+
+        order.sudo().write(writes)
+
+        # Restore Neto prices after state change (Odoo may reprice on confirm)
+        if target_state in ('sale', 'done'):
+            for ol in order.order_line:
+                neto = line_prices.get(ol.product_id.id)
+                if neto is not None:
+                    price, disc = neto
+                    price_writes = {}
+                    if ol.price_unit != price:
+                        price_writes['price_unit'] = price
+                    if ol.discount != disc:
+                        price_writes['discount'] = disc
+                    if price_writes:
+                        ol.sudo().write(price_writes)
+
+        _logger.info(
+            'Neto sync: order %s — state set to "%s" (Neto status: %s)',
+            order_id, target_state, order_status,
+        )
+        return target_state
 
     def _create_sale_order(self, order_data, partner, store, neto_internal=False):
         Order = self.env['sale.order'].sudo()
@@ -693,62 +737,10 @@ class NetoConnector(models.AbstractModel):
                         order_id, sh_exc,
                     )
 
-        # --- Confirm / Cancel / Lock ---
-        if order_status in _CANCEL_STATUSES:
-            # Confirm first so lines are properly validated, then cancel
-            try:
-                order.action_confirm()
-            except Exception:
-                pass  # draft is acceptable — cancel below regardless
-            try:
-                order.action_cancel()
-                _logger.info(
-                    'Neto sync: order %s cancelled (Neto status: %s)',
-                    order_id, order_status,
-                )
-            except Exception as cancel_exc:
-                _logger.warning(
-                    'Neto sync: could not cancel order %s — %s', order_id, cancel_exc
-                )
-        else:
-            try:
-                order.action_confirm()
-                # Restore Neto prices (action_confirm may reprice)
-                for ol in order.order_line:
-                    neto = line_prices.get(ol.product_id.id)
-                    if neto is not None:
-                        price, disc = neto
-                        writes = {}
-                        if ol.price_unit != price:
-                            writes['price_unit'] = price
-                        if ol.discount != disc:
-                            writes['discount'] = disc
-                        if writes:
-                            ol.sudo().write(writes)
-                if date_order:
-                    order.sudo().write({'date_order': date_order})
-
-                # Lock dispatched orders using direct state write.
-                # action_lock() requires the sale_management module which may not
-                # be installed — write({'state': 'done'}) works universally.
-                if order_status in _DISPATCHED_STATUSES:
-                    try:
-                        order.sudo().write({'state': 'done'})
-                        _logger.info(
-                            'Neto sync: order %s locked/done (Neto status: %s)',
-                            order_id, order_status,
-                        )
-                    except Exception as lock_exc:
-                        _logger.warning(
-                            'Neto sync: could not lock order %s — %s', order_id, lock_exc
-                        )
-            except Exception as confirm_exc:
-                _logger.info(
-                    'Neto sync: order %s left as draft (action_confirm skipped: %s)',
-                    order_id, confirm_exc,
-                )
-                if date_order:
-                    order.sudo().write({'date_order': date_order})
+        # --- Set final order state (no stock moves generated) ---
+        final_state = self._set_order_state(
+            order, order_id, order_status, date_order, line_prices
+        )
 
         # -----------------------------------------------------------------------
         # Post chatter message
