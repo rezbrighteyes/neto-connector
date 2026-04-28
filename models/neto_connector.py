@@ -1003,13 +1003,7 @@ class NetoConnector(models.AbstractModel):
         msg_parts = []
 
         if neto_internal:
-            msg_parts.append(Markup(
-                '<p>&#128274; <strong>This is an internal order</strong> '
-                '(zero-value transfer or BrightEyes replenishment). '
-                'It is fully synced and visible to staff but is flagged '
-                '<em>neto_internal = True</em> so it can be excluded '
-                'from standard sales reports.</p>'
-            ))
+            msg_parts.append(Markup('<p>⚠️ No billable items.</p>'))
 
         if order_status in _CANCEL_STATUSES:
             msg_parts.append(Markup(
