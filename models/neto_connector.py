@@ -33,6 +33,10 @@ _CANCEL_STATUSES = frozenset({'Cancelled', 'Declined'})
 # Dispatched orders are confirmed ('sale') and identified by neto_order_status.
 _DISPATCHED_STATUSES = frozenset({'Dispatched'})
 
+# Only create invoices for orders placed within this many days.
+# Historical orders get a sale.order only — no invoice created.
+_INVOICE_CUTOFF_DAYS = 60
+
 # GetItem OutputSelectors we need for product creation
 _GETITEM_OUTPUT = [
     'Name', 'Brand', 'Model',
@@ -529,7 +533,7 @@ class NetoConnector(models.AbstractModel):
         if credit_limit is not None:
             try:
                 credit_limit_float = float(credit_limit)
-                if credit_limit_float != 0.0:
+                if credit_limit_float != 0.0 and 'credit_limit' in self.env['res.partner']._fields:
                     vals['credit_limit'] = credit_limit_float
             except (ValueError, TypeError):
                 pass
@@ -975,9 +979,17 @@ class NetoConnector(models.AbstractModel):
             order, order_id, order_status, date_order, line_prices
         )
 
-        # --- Auto-create invoice for confirmed orders ---
+        # --- Auto-create invoice for confirmed orders (recent only) ---
         if final_state == 'sale':
-            self._create_invoice(order, payment_method, date_paid)
+            from datetime import timedelta
+            cutoff = fields.Datetime.now() - timedelta(days=_INVOICE_CUTOFF_DAYS)
+            if date_order and date_order >= cutoff:
+                self._create_invoice(order, payment_method, date_paid)
+            else:
+                _logger.info(
+                    'Neto sync: order %s is older than %d days — skipping invoice creation',
+                    order_id, _INVOICE_CUTOFF_DAYS,
+                )
 
         # -----------------------------------------------------------------------
         # Post chatter message
