@@ -356,6 +356,7 @@ class NetoConnector(models.AbstractModel):
             'active':         True,
             'list_price':     list_price,
             'standard_price': cost_price,
+            'company_id':     False,
         }
         if barcode:
             vals['barcode'] = barcode
