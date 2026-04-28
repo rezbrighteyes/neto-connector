@@ -302,6 +302,16 @@ class NetoConnector(models.AbstractModel):
             return product, False
 
         item = self._fetch_neto_item(store, sku)
+        if item:
+            neto_barcode = (item.get('UPC') or item.get('UPC1') or '').strip()
+            if neto_barcode:
+                product = Product.search([('barcode', '=', neto_barcode)], limit=1)
+                if product:
+                    _logger.info(
+                        'Neto sync: SKU=%s matched existing product "%s" via barcode %s',
+                        sku, product.name, neto_barcode,
+                    )
+                    return product, False
 
         if item and item.get('Name'):
             base_name = item['Name'].strip()
