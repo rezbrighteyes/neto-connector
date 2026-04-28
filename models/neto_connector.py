@@ -593,12 +593,16 @@ class NetoConnector(models.AbstractModel):
     # Partner
     # -------------------------------------------------------------------------
 
-    def _get_or_create_partner(self, username, order_data, store):
+    def _get_or_create_partner(self, username, order_data, store, synced_customers=None):
+        if synced_customers is None:
+            synced_customers = set()
         """Find partner by neto_username or create one from the order's billing fields."""
         Partner = self.env['res.partner'].sudo()
         partner = Partner.search([('neto_username', '=', username)], limit=1)
         if partner:
-            self._sync_customer(store, partner, username)
+            if username not in synced_customers:
+                self._sync_customer(store, partner, username)
+                synced_customers.add(username)
             return partner, False
 
         first = (order_data.get('BillFirstName') or '').strip()
@@ -651,6 +655,7 @@ class NetoConnector(models.AbstractModel):
             display_name, username, email,
         )
         self._sync_customer(store, partner, username)
+        synced_customers.add(username)
         return partner, True
 
     # -------------------------------------------------------------------------
@@ -1096,7 +1101,9 @@ class NetoConnector(models.AbstractModel):
     # Per-order processing
     # -------------------------------------------------------------------------
 
-    def _process_order(self, order_data, store, synced_ids):
+    def _process_order(self, order_data, store, synced_ids, synced_customers=None):
+        if synced_customers is None:
+            synced_customers = set()
         """Process a single Neto order dict — ALL orders are synced."""
         SyncLog = self.env['neto.sync.log'].sudo()
 
@@ -1138,7 +1145,7 @@ class NetoConnector(models.AbstractModel):
                     reason = 'BrightEyes internal replenishment (synced, flagged internal)'
                 _logger.info('Neto sync: order %s — %s', order_id, reason)
 
-            partner, partner_created = self._get_or_create_partner(username, order_data, store)
+            partner, partner_created = self._get_or_create_partner(username, order_data, store, synced_customers)
             sale_order, missing_lines = self._create_sale_order(
                 order_data, partner, store, neto_internal=neto_internal
             )
@@ -1198,9 +1205,10 @@ class NetoConnector(models.AbstractModel):
         store.sudo().write({'last_sync_date': fields.Datetime.now()})
 
         synced_ids = set()
+        synced_customers = set()
         _logger.info('Neto sync [%s]: %d order(s) to process', store.name, len(orders))
         for order_data in orders:
-            self._process_order(order_data, store, synced_ids)
+            self._process_order(order_data, store, synced_ids, synced_customers)
             self.env.cr.commit()
 
         _logger.info('Neto sync [%s]: completed.', store.name)
