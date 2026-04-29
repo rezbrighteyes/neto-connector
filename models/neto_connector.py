@@ -19,8 +19,11 @@ _SHIPPING_SKU  = 'NETO_SHIPPING'   # internal product SKU for shipping lines
 _SKIP_SKU_PREFIXES = (
     'DS_',
     'REPVISIT_',
+    'pack_',
     'p_header_',
     'stand_',
+    'catalogue_',
+    'header_',
 )
 _NOTE_SKU_EXACT = frozenset({'TEXT_NOTE'})
 
@@ -1227,3 +1230,397 @@ class NetoConnector(models.AbstractModel):
                     'Neto connector: _sync_store failed for store "%s" — %s',
                     store.name, exc,
                 )
+            try:
+                rma_since = store.last_rma_sync_date
+                if rma_since:
+                    rma_since = rma_since.replace(tzinfo=timezone.utc)
+                else:
+                    rma_since = datetime.now(timezone.utc) - timedelta(hours=24)
+                self._sync_rmas(store, rma_since)
+            except Exception as exc:
+                _logger.exception(
+                    'Neto connector: _sync_rmas failed for store "%s" — %s',
+                    store.name, exc,
+                )
+
+    # -------------------------------------------------------------------------
+    # RMA sync
+    # -------------------------------------------------------------------------
+
+    _GET_RMA_OUTPUT_SELECTOR = [
+        'OrderID', 'InvoiceNumber', 'CustomerUsername',
+        'RmaStatus', 'InternalNotes',
+        'ShippingRefundAmount', 'SurchargeRefundAmount',
+        'RefundSubtotal', 'RefundTotal', 'RefundTaxTotal',
+        'DateIssued', 'DateUpdated', 'DateApproved',
+        'RmaLine', 'RmaLine.SKU', 'RmaLine.ProductName',
+        'RmaLine.Quantity', 'RmaLine.RefundSubtotal',
+        'RmaLine.Tax', 'RmaLine.TaxCode', 'RmaLine.ReturnReason',
+        'Refund', 'Refund.PaymentMethodName',
+        'Refund.RefundAmount', 'Refund.DateRefunded',
+        'Refund.RefundStatus', 'RefundedTotal',
+    ]
+
+    def _fetch_rmas(self, store, since_dt, until_dt=None):
+        url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
+        headers = {
+            'Content-Type': 'application/json',
+            'NETOAPI_ACTION': 'GetRma',
+            'NETOAPI_KEY': store.api_key,
+            'Accept': 'application/json',
+        }
+        date_filter = {'DateUpdatedFrom': since_dt.strftime('%Y-%m-%dT%H:%M:%S')}
+        if until_dt:
+            date_filter['DateUpdatedTo'] = until_dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+        all_rmas = []
+        page = 1
+        while True:
+            payload = {
+                'Filter': {
+                    **date_filter,
+                    'Page': page,
+                    'Limit': 50,
+                    'OutputSelector': self._GET_RMA_OUTPUT_SELECTOR,
+                }
+            }
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=60)
+                response.raise_for_status()
+                body = response.json()
+            except Exception as exc:
+                _logger.error('Neto RMA sync [%s]: API error page %d — %s', store.name, page, exc)
+                break
+
+            rmas = body.get('Rma', [])
+            if isinstance(rmas, dict):
+                rmas = [rmas]
+            rmas = rmas or []
+
+            _logger.info('Neto RMA sync [%s]: page %d — %d RMA(s)', store.name, page, len(rmas))
+            all_rmas.extend(rmas)
+
+            if len(rmas) < 50:
+                break
+            page += 1
+
+        _logger.info('Neto RMA sync [%s]: %d total RMA(s)', store.name, len(all_rmas))
+        return all_rmas
+
+    def _get_refunds_from_rma(self, rma_data):
+        refunds = rma_data.get('Refunds') or rma_data.get('Refund') or []
+        if not refunds or refunds == '':
+            return []
+        if isinstance(refunds, dict):
+            inner = refunds.get('Refund', refunds)
+            if isinstance(inner, dict):
+                return [inner]
+            return inner or []
+        if isinstance(refunds, list):
+            return refunds
+        return []
+
+    def _create_credit_note(self, rma_data, partner, store, original_invoice=None):
+        Move = self.env['account.move'].sudo()
+        MoveLine = self.env['account.move.line'].sudo()
+        Product = self.env['product.product'].sudo()
+
+        rma_id = str(rma_data.get('RmaID', ''))
+        invoice_number = (rma_data.get('InvoiceNumber') or '').strip()
+        rma_status = (rma_data.get('RmaStatus') or '').strip()
+        internal_notes = (rma_data.get('InternalNotes') or '').strip()
+        date_issued = self._parse_neto_datetime(rma_data.get('DateIssued'))
+
+        move_vals = {
+            'move_type':       'out_refund',
+            'partner_id':      partner.id,
+            'company_id':      store.company_id.id,
+            'invoice_date':    date_issued or fields.Date.today(),
+            'ref':             f"Neto RMA {rma_id} / {invoice_number}",
+            'narration':       internal_notes or False,
+            'neto_rma_id':     rma_id,
+            'neto_rma_status': rma_status,
+        }
+        if original_invoice:
+            move_vals['invoice_origin'] = original_invoice.name
+
+        credit_note = Move.create(move_vals)
+
+        raw_lines = rma_data.get('RmaLines') or {}
+        if isinstance(raw_lines, dict):
+            raw_lines = raw_lines.get('RmaLine', [])
+        if isinstance(raw_lines, dict):
+            raw_lines = [raw_lines]
+        raw_lines = raw_lines or []
+
+        note_lines = []
+
+        for line in raw_lines:
+            sku = (line.get('SKU') or '').strip()
+            product_name = (line.get('ProductName') or '').strip()
+            refund_subtotal = round(float(line.get('RefundSubtotal') or 0), 4)
+            qty = float(line.get('Quantity') or 1) or 1
+            return_reason = (line.get('ReturnReason') or '').strip()
+
+            if sku == 'TEXT_NOTE' or (not sku and product_name.startswith('NOTE:')):
+                note_lines.append(product_name)
+                continue
+
+            if not refund_subtotal and not product_name:
+                continue
+
+            product = None
+            if sku:
+                product = Product.search([('default_code', '=', sku)], limit=1)
+                if not product:
+                    product = Product.search([('barcode', '=', sku)], limit=1)
+            if not product and product_name:
+                product = Product.search([('name', 'ilike', product_name)], limit=1)
+
+            description = product_name or (product.name if product else sku or 'Return')
+            if return_reason and return_reason.lower() != 'other':
+                description += f' — Reason: {return_reason}'
+
+            line_vals = {
+                'move_id':    credit_note.id,
+                'quantity':   qty,
+                'price_unit': round(refund_subtotal / qty, 4) if qty else refund_subtotal,
+                'name':       description,
+            }
+            if product:
+                line_vals['product_id'] = product.id
+
+            try:
+                MoveLine.create(line_vals)
+            except Exception as exc:
+                _logger.warning(
+                    'Neto RMA sync: could not create line SKU=%s RMA=%s — %s',
+                    sku, rma_id, exc,
+                )
+
+        shipping_refund = round(float(rma_data.get('ShippingRefundAmount') or 0), 4)
+        if shipping_refund > 0:
+            ship_product = self._get_shipping_product()
+            if ship_product:
+                try:
+                    MoveLine.create({
+                        'move_id':    credit_note.id,
+                        'product_id': ship_product.id,
+                        'quantity':   1,
+                        'price_unit': shipping_refund,
+                        'name':       'Shipping Refund',
+                    })
+                except Exception as exc:
+                    _logger.warning('Neto RMA sync: shipping line failed RMA=%s — %s', rma_id, exc)
+
+        surcharge_refund = round(float(rma_data.get('SurchargeRefundAmount') or 0), 4)
+        if surcharge_refund > 0:
+            sc_product = self._get_surcharge_product()
+            try:
+                MoveLine.create({
+                    'move_id':    credit_note.id,
+                    'product_id': sc_product.id,
+                    'quantity':   1,
+                    'price_unit': surcharge_refund,
+                    'name':       'Surcharge Refund',
+                })
+            except Exception as exc:
+                _logger.warning('Neto RMA sync: surcharge line failed RMA=%s — %s', rma_id, exc)
+
+        try:
+            credit_note.sudo().action_post()
+            _logger.info('Neto RMA sync: credit note %s posted for RMA %s', credit_note.name, rma_id)
+        except Exception as exc:
+            _logger.warning('Neto RMA sync: could not post credit note RMA=%s — %s', rma_id, exc)
+            return credit_note, note_lines
+
+        refunds = self._get_refunds_from_rma(rma_data)
+        for refund in refunds:
+            if (refund.get('RefundStatus') or '').strip() != 'Refunded':
+                continue
+            refund_amount = round(float(refund.get('RefundAmount') or 0), 2)
+            date_refunded = self._parse_neto_datetime(refund.get('DateRefunded'))
+            payment_method = (refund.get('PaymentMethodName') or '').strip() or None
+            if not refund_amount or not date_refunded:
+                continue
+            journal = self._get_payment_journal(payment_method)
+            if not journal:
+                continue
+            try:
+                payment = self.env['account.payment'].sudo().create({
+                    'payment_type': 'outbound',
+                    'partner_type': 'customer',
+                    'partner_id':   partner.id,
+                    'amount':       refund_amount,
+                    'date':         date_refunded,
+                    'journal_id':   journal.id,
+                })
+                payment.sudo().action_post()
+                payment.sudo().invalidate_recordset()
+                payment_lines = payment.move_id.line_ids.filtered(
+                    lambda l: l.account_id.account_type == 'asset_receivable'
+                )
+                credit_lines = credit_note.line_ids.filtered(
+                    lambda l: l.account_id.account_type == 'asset_receivable'
+                    and not l.reconciled
+                )
+                (payment_lines + credit_lines).reconcile()
+                _logger.info(
+                    'Neto RMA sync: refund payment %.2f reconciled for RMA %s',
+                    refund_amount, rma_id,
+                )
+            except Exception as exc:
+                _logger.warning(
+                    'Neto RMA sync: refund payment failed RMA=%s — %s', rma_id, exc,
+                )
+
+        return credit_note, note_lines
+
+    def _process_rma(self, rma_data, store, synced_rma_ids):
+        RmaLog = self.env['neto.rma.log'].sudo()
+
+        rma_id = str(rma_data.get('RmaID', ''))
+        invoice_number = (rma_data.get('InvoiceNumber') or '').strip()
+        order_id_field = (rma_data.get('OrderID') or '').strip()
+        username = (rma_data.get('CustomerUsername') or '').strip()
+        rma_status = (rma_data.get('RmaStatus') or '').strip()
+        refund_total = round(float(rma_data.get('RefundTotal') or 0), 2)
+
+        base_vals = {
+            'neto_rma_id':        rma_id,
+            'neto_invoice_number': invoice_number,
+            'neto_username':      username,
+            'neto_rma_status':    rma_status,
+            'neto_refund_total':  refund_total,
+            'store_id':           store.id,
+        }
+
+        try:
+            if rma_id in synced_rma_ids:
+                return
+            if self.env['account.move'].sudo().search_count(
+                [('neto_rma_id', '=', rma_id)]
+            ):
+                return
+            synced_rma_ids.add(rma_id)
+
+            lookup_id = invoice_number or order_id_field
+            original_order = None
+            original_invoice = None
+
+            if lookup_id:
+                original_order = self.env['sale.order'].sudo().search(
+                    [('neto_order_id', '=', lookup_id)], limit=1
+                )
+                if not original_order:
+                    _logger.info(
+                        'Neto RMA sync: order %s not found — syncing first', lookup_id
+                    )
+                    self._sync_single_order_by_id(store, lookup_id)
+                    original_order = self.env['sale.order'].sudo().search(
+                        [('neto_order_id', '=', lookup_id)], limit=1
+                    )
+
+            if original_order and original_order.invoice_ids:
+                original_invoice = original_order.invoice_ids.filtered(
+                    lambda i: i.move_type == 'out_invoice' and i.state == 'posted'
+                )[:1]
+
+            if original_order:
+                partner = original_order.partner_id
+            elif username:
+                partner = self.env['res.partner'].sudo().search(
+                    [('neto_username', '=', username)], limit=1
+                )
+                if not partner:
+                    RmaLog.create({
+                        **base_vals,
+                        'state': 'skipped',
+                        'skip_reason': f'Partner not found for username {username}',
+                    })
+                    return
+            else:
+                RmaLog.create({
+                    **base_vals,
+                    'state': 'skipped',
+                    'skip_reason': 'No order or username to identify partner',
+                })
+                return
+
+            credit_note, note_lines = self._create_credit_note(
+                rma_data, partner, store, original_invoice=original_invoice
+            )
+
+            msg_parts = []
+            if original_order:
+                msg_parts.append(Markup(
+                    '<p>&#128279; <strong>Linked to Neto order:</strong> {oid}</p>'
+                ).format(oid=lookup_id))
+            if note_lines:
+                items = Markup('').join(
+                    Markup('<li>{n}</li>').format(n=n) for n in note_lines
+                )
+                msg_parts.append(Markup(
+                    '<p>&#8505;&#65039; <strong>Neto RMA notes:</strong></p>'
+                    '<ul>{items}</ul>'
+                ).format(items=items))
+            if msg_parts:
+                credit_note.sudo().message_post(body=Markup('').join(msg_parts))
+
+            RmaLog.create({
+                **base_vals,
+                'state':          'success',
+                'credit_note_id': credit_note.id,
+                'partner_id':     partner.id,
+            })
+            _logger.info('Neto RMA sync: RMA %s → %s', rma_id, credit_note.name)
+
+        except Exception as exc:
+            _logger.exception('Neto RMA sync: unhandled error on RMA %s', rma_id)
+            RmaLog.create({**base_vals, 'state': 'error', 'error_message': str(exc)})
+
+    def _sync_single_order_by_id(self, store, order_id):
+        url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
+        headers = {
+            'Content-Type': 'application/json',
+            'NETOAPI_ACTION': 'GetOrder',
+            'NETOAPI_KEY': store.api_key,
+            'Accept': 'application/json',
+        }
+        payload = {
+            'Filter': {
+                'OrderID': [order_id],
+                'OutputSelector': GET_ORDER_OUTPUT_SELECTOR,
+            }
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            _logger.warning('Neto RMA sync: GetOrder failed for %s — %s', order_id, exc)
+            return
+        orders = body.get('Order', [])
+        if isinstance(orders, dict):
+            orders = [orders]
+        orders = orders or []
+        if not orders:
+            return
+        synced_ids = set()
+        synced_customers = set()
+        self._process_order(orders[0], store, synced_ids, synced_customers)
+        self.env.cr.commit()
+
+    def _sync_rmas(self, store, since_dt, until_dt=None):
+        _logger.info('Neto RMA sync [%s]: starting from %s', store.name, since_dt)
+        try:
+            rmas = self._fetch_rmas(store, since_dt, until_dt=until_dt)
+        except Exception as exc:
+            _logger.error('Neto RMA sync [%s]: _fetch_rmas failed — %s', store.name, exc)
+            return
+        synced_rma_ids = set()
+        for rma_data in rmas:
+            self._process_rma(rma_data, store, synced_rma_ids)
+            self.env.cr.commit()
+        store.sudo().write({'last_rma_sync_date': fields.Datetime.now()})
+        _logger.info('Neto RMA sync [%s]: completed — %d RMA(s)', store.name, len(rmas))
