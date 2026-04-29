@@ -41,7 +41,7 @@ _DISPATCHED_STATUSES = frozenset({'Dispatched'})
 
 # Only create invoices for orders placed within this many days.
 # Exception: orders with full payment recorded in Neto are always invoiced.
-_INVOICE_CUTOFF_DAYS = 60
+_INVOICE_CUTOFF_DAYS = 730
 
 # GetOrder page size — Neto returns max 50 per page
 _GET_ORDER_PAGE_SIZE = 50
@@ -1173,6 +1173,8 @@ class NetoConnector(models.AbstractModel):
     # -------------------------------------------------------------------------
 
     def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None):
+        # Suppress all email notifications during sync
+        self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
         if not store.api_key or not store.store_url:
             _logger.warning(
                 'Neto connector: store "%s" missing api_key or store_url — skipping.',
@@ -1622,6 +1624,7 @@ class NetoConnector(models.AbstractModel):
         self.env.cr.commit()
 
     def _sync_rmas(self, store, since_dt, until_dt=None):
+        self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
         _logger.info('Neto RMA sync [%s]: starting from %s', store.name, since_dt)
         try:
             rmas = self._fetch_rmas(store, since_dt, until_dt=until_dt)
