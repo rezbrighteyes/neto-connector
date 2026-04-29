@@ -12,6 +12,7 @@ class NetoStore(models.Model):
     api_key = fields.Char(string='API Key', required=True, password=True)
     active = fields.Boolean(string='Active', default=True)
     last_sync_date = fields.Datetime(string='Last Sync', readonly=True)
+    last_rma_sync_date = fields.Datetime(string='Last RMA Sync', readonly=True)
     company_id = fields.Many2one(
         'res.company', string='Company', required=True,
         default=lambda self: self.env.company,

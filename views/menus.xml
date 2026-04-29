@@ -49,4 +49,5 @@
               action="neto_settings_action"
               sequence="30"/>
 
+    <menuitem id="menu_neto_rma_log" name="RMA Log" parent="menu_neto_sync_root" action="neto_rma_log_action" sequence="15"/>
 </odoo>

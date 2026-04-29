@@ -6,3 +6,6 @@ from . import neto_sync_wizard
 from . import res_partner
 from . import sale_order
 from . import res_config_settings
+
+from . import neto_rma_log
+from . import account_move

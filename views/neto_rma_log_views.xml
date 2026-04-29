@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="neto_rma_log_view_list" model="ir.ui.view">
+        <field name="name">neto.rma.log.list</field>
+        <field name="model">neto.rma.log</field>
+        <field name="arch" type="xml">
+            <list string="Neto RMA Log" decoration-success="state == chr(39)success chr(39)" decoration-danger="state == chr(39)error chr(39)">
+                <field name="sync_date"/>
+                <field name="neto_rma_id"/>
+                <field name="neto_invoice_number"/>
+                <field name="neto_rma_status"/>
+                <field name="neto_username"/>
+                <field name="neto_refund_total" string="Refund Total"/>
+                <field name="state" widget="badge"/>
+                <field name="store_id" optional="show"/>
+                <field name="credit_note_id"/>
+                <field name="partner_id"/>
+            </list>
+        </field>
+    </record>
+    <record id="neto_rma_log_view_form" model="ir.ui.view">
+        <field name="name">neto.rma.log.form</field>
+        <field name="model">neto.rma.log</field>
+        <field name="arch" type="xml">
+            <form string="Neto RMA Log">
+                <sheet>
+                    <group>
+                        <group string="RMA Info">
+                            <field name="neto_rma_id"/>
+                            <field name="neto_invoice_number"/>
+                            <field name="neto_rma_status"/>
+                            <field name="neto_username"/>
+                            <field name="neto_refund_total"/>
+                        </group>
+                        <group string="Sync Result">
+                            <field name="store_id"/>
+                            <field name="state" widget="badge"/>
+                            <field name="sync_date"/>
+                            <field name="credit_note_id"/>
+                            <field name="partner_id"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="skip_reason" invisible="state != chr(39)skipped chr(39)"/>
+                        <field name="error_message" invisible="state != chr(39)error chr(39)" widget="text"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="neto_rma_log_action" model="ir.actions.act_window">
+        <field name="name">RMA Log</field>
+        <field name="res_model">neto.rma.log</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>
