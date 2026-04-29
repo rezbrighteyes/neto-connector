@@ -94,6 +94,16 @@ class NetoConnector(models.AbstractModel):
         except (ValueError, TypeError):
             return False
 
+    def _parse_neto_date(self, raw):
+        """Return a date string (YYYY-MM-DD) from a Neto datetime string, or False.
+
+        Slices the date portion directly from the raw string to avoid UTC
+        conversion rolling the date back for AEST (UTC+10/11) timestamps.
+        """
+        if not raw:
+            return False
+        return str(raw)[:10]
+
     def _is_internal_sku(self, sku):
         """Return True for SKUs that should be silently skipped."""
         return any(sku.startswith(pfx) for pfx in _SKIP_SKU_PREFIXES)
@@ -972,13 +982,6 @@ class NetoConnector(models.AbstractModel):
         )
 
         # --- Invoice creation logic ---
-        # Create invoice if:
-        #   1. Order is confirmed (not cancelled), AND
-        #   2. EITHER the order is recent (within cutoff), OR it is fully paid in Neto
-        #
-        # NOTE: Enabling invoicing for old paid orders is intentional — it catches
-        # late payments on historical orders. Be aware this may generate backdated
-        # invoices on first run if there is a backlog of old paid orders.
         if final_state == 'sale':
             cutoff = fields.Datetime.now() - timedelta(days=_INVOICE_CUTOFF_DAYS)
             is_recent = date_order and date_order >= cutoff
@@ -1329,17 +1332,21 @@ class NetoConnector(models.AbstractModel):
         invoice_number = (rma_data.get('InvoiceNumber') or '').strip()
         rma_status = (rma_data.get('RmaStatus') or '').strip()
         internal_notes = (rma_data.get('InternalNotes') or '').strip()
-        date_issued = self._parse_neto_datetime(rma_data.get('DateIssued'))
+
+        # Use _parse_neto_date to slice YYYY-MM-DD directly from the raw string,
+        # avoiding UTC conversion that rolls AEST dates back by one day.
+        date_issued = self._parse_neto_date(rma_data.get('DateIssued'))
 
         move_vals = {
-            'move_type':       'out_refund',
-            'partner_id':      partner.id,
-            'company_id':      store.company_id.id,
-            'invoice_date':    date_issued or fields.Date.today(),
-            'ref':             f"Neto RMA {rma_id} / {invoice_number}",
-            'narration':       internal_notes or False,
-            'neto_rma_id':     rma_id,
-            'neto_rma_status': rma_status,
+            'move_type':              'out_refund',
+            'partner_id':             partner.id,
+            'company_id':             store.company_id.id,
+            'invoice_date':           date_issued or fields.Date.today(),
+            'invoice_payment_term_id': False,  # immediate due date — do not inherit customer terms
+            'ref':                    f"Neto RMA {rma_id} / {invoice_number}",
+            'narration':              internal_notes or False,
+            'neto_rma_id':            rma_id,
+            'neto_rma_status':        rma_status,
         }
         if original_invoice:
             move_vals['invoice_origin'] = original_invoice.name
@@ -1381,10 +1388,13 @@ class NetoConnector(models.AbstractModel):
             if return_reason and return_reason.lower() != 'other':
                 description += f' — Reason: {return_reason}'
 
+            # Neto RefundSubtotal is GST-inclusive; divide by GST_DIVISOR so
+            # Odoo adds tax correctly without double-counting GST.
+            refund_subtotal_excl = round(refund_subtotal / _GST_DIVISOR, 4)
             line_vals = {
                 'move_id':    credit_note.id,
                 'quantity':   qty,
-                'price_unit': round(refund_subtotal / qty, 4) if qty else refund_subtotal,
+                'price_unit': round(refund_subtotal_excl / qty, 4) if qty else refund_subtotal_excl,
                 'name':       description,
             }
             if product:
@@ -1407,7 +1417,7 @@ class NetoConnector(models.AbstractModel):
                         'move_id':    credit_note.id,
                         'product_id': ship_product.id,
                         'quantity':   1,
-                        'price_unit': shipping_refund,
+                        'price_unit': round(shipping_refund / _GST_DIVISOR, 4),
                         'name':       'Shipping Refund',
                     })
                 except Exception as exc:
@@ -1421,7 +1431,7 @@ class NetoConnector(models.AbstractModel):
                     'move_id':    credit_note.id,
                     'product_id': sc_product.id,
                     'quantity':   1,
-                    'price_unit': surcharge_refund,
+                    'price_unit': round(surcharge_refund / _GST_DIVISOR, 4),
                     'name':       'Surcharge Refund',
                 })
             except Exception as exc:
