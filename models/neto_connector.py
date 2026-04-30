@@ -624,6 +624,25 @@ class NetoConnector(models.AbstractModel):
                 synced_customers.add(username)
             return partner, False
 
+        # Before creating, check if a partner with the same name already exists
+        # This prevents duplicates when Odoo already has the customer from another source
+        if company or (first or last):
+            display_name_check = company if company else f"{first} {last}".strip()
+            existing = Partner.search([
+                ("name", "=", display_name_check),
+                ("neto_username", "=", False),
+                ("parent_id", "=", False),
+            ], limit=1)
+            if existing:
+                existing.sudo().write({"neto_username": username, "ref": username})
+                _logger.info(
+                    "Neto sync: linked existing partner \%s\ to username %s",
+                    display_name_check, username,
+                )
+                self._sync_customer(store, existing, username)
+                synced_customers.add(username)
+                return existing, False
+
         first   = (order_data.get('BillFirstName') or '').strip()
         last    = (order_data.get('BillLastName')  or '').strip()
         company = (order_data.get('BillCompany')   or '').strip()
