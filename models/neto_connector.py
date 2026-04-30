@@ -626,6 +626,9 @@ class NetoConnector(models.AbstractModel):
 
         # Before creating, check if a partner with the same name already exists
         # This prevents duplicates when Odoo already has the customer from another source
+        first = (order_data.get("BillFirstName") or "").strip()
+        last  = (order_data.get("BillLastName") or "").strip()
+        company = (order_data.get("BillCompany") or "").strip()
         if company or (first or last):
             display_name_check = company if company else f"{first} {last}".strip()
             existing = Partner.search([
