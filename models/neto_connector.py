@@ -1275,7 +1275,7 @@ class NetoConnector(models.AbstractModel):
     # -------------------------------------------------------------------------
 
     _GET_RMA_OUTPUT_SELECTOR = [
-        'OrderID', 'InvoiceNumber', 'CustomerUsername',
+        'RmaID', 'OrderID', 'InvoiceNumber', 'CustomerUsername',
         'RmaStatus', 'InternalNotes',
         'ShippingRefundAmount', 'SurchargeRefundAmount',
         'RefundSubtotal', 'RefundTotal', 'RefundTaxTotal',
@@ -1554,6 +1554,17 @@ class NetoConnector(models.AbstractModel):
                     original_order = self.env['sale.order'].sudo().search(
                         [('neto_order_id', '=', lookup_id)], limit=1
                     )
+                if not original_order:
+                    _logger.info(
+                        'Neto RMA sync: RMA %s — order %s not found after sync attempt, '
+                        'logging as skipped', rma_id, lookup_id
+                    )
+                    RmaLog.create({
+                        **base_vals,
+                        'state': 'skipped',
+                        'skip_reason': f'Order {lookup_id} not found in Odoo (outside sync window)',
+                    })
+                    return
 
             if original_order and original_order.invoice_ids:
                 original_invoice = original_order.invoice_ids.filtered(
