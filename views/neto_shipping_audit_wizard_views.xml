@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="neto_shipping_audit_wizard_view_form" model="ir.ui.view">
+        <field name="name">neto.shipping.audit.wizard.form</field>
+        <field name="model">neto.shipping.audit.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Neto Shipping Data Audit">
+                <sheet>
+                    <group>
+                        <group string="Scope">
+                            <field name="store_ids" widget="many2many_tags"/>
+                            <field name="sku_input" placeholder="Optional: one SKU per line, or comma separated"/>
+                        </group>
+                        <group string="Options">
+                            <field name="limit"/>
+                            <field name="include_inactive"/>
+                        </group>
+                    </group>
+                    <group string="Result" invisible="not csv_file">
+                        <field name="result_message" readonly="1" nolabel="1"/>
+                        <field name="csv_filename" invisible="1"/>
+                        <field name="csv_file" filename="csv_filename" readonly="1"/>
+                    </group>
+                </sheet>
+                <footer>
+                    <button name="action_generate_audit" string="Generate Audit CSV" type="object" class="btn-primary"/>
+                    <button string="Close" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="neto_shipping_audit_wizard_action" model="ir.actions.act_window">
+        <field name="name">Shipping Data Audit</field>
+        <field name="res_model">neto.shipping.audit.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+</odoo>

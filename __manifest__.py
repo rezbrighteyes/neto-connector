@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Neto Order Sync for Odoo',
-    'version': '19.0.1.2.0',
+    'version': '19.0.1.3.0',
     'author': 'Reza Shiraz',
     'license': 'OPL-1',
     'category': 'Sales/Sales',
@@ -25,6 +25,7 @@ single order by Neto Order ID via Neto Sync > Sync Single Order.
         'data/cron.xml',
         'views/neto_store_views.xml',
         'views/neto_sync_log_views.xml',
+        'views/neto_shipping_audit_wizard_views.xml',
         'views/neto_sync_wizard_views.xml',
         'views/res_partner_views.xml',
         'views/sale_order_views.xml',

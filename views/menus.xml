@@ -43,6 +43,13 @@
               groups="base.group_system"
               sequence="25"/>
 
+    <menuitem id="menu_neto_shipping_audit"
+              name="Shipping Data Audit"
+              parent="menu_neto_sync_root"
+              action="neto_shipping_audit_wizard_action"
+              groups="base.group_system"
+              sequence="27"/>
+
     <menuitem id="menu_neto_settings"
               name="Settings"
               parent="menu_neto_sync_root"
