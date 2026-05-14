@@ -179,6 +179,8 @@ class NetoShippingAuditWizard(models.TransientModel):
             notes.append('weight_differs')
         if not (neto_length and neto_width and neto_height):
             notes.append('missing_neto_dimensions')
+        else:
+            notes.append('neto_dimension_units_need_review')
         if package and (package.length or package.width or package.height):
             notes.append('odoo_default_package_exists')
 
@@ -200,9 +202,9 @@ class NetoShippingAuditWizard(models.TransientModel):
             'neto_shipping_weight_kg': neto_weight,
             'proposed_weight_kg': neto_weight or '',
             'weight_delta_kg': round(neto_weight - odoo_weight, 4) if single_product and neto_weight else '',
-            'neto_length_cm': neto_length,
-            'neto_width_cm': neto_width,
-            'neto_height_cm': neto_height,
+            'neto_shipping_length_raw': neto_length,
+            'neto_shipping_width_raw': neto_width,
+            'neto_shipping_height_raw': neto_height,
             'odoo_default_package': package.display_name if package else '',
             'odoo_package_length': package.length if package else '',
             'odoo_package_width': package.width if package else '',
@@ -235,7 +237,7 @@ class NetoShippingAuditWizard(models.TransientModel):
             'neto_barcode', 'neto_active', 'match_type', 'odoo_product_id',
             'odoo_product', 'odoo_sku', 'odoo_barcode', 'odoo_weight_kg',
             'neto_shipping_weight_kg', 'proposed_weight_kg', 'weight_delta_kg',
-            'neto_length_cm', 'neto_width_cm', 'neto_height_cm',
+            'neto_shipping_length_raw', 'neto_shipping_width_raw', 'neto_shipping_height_raw',
             'odoo_default_package', 'odoo_package_length', 'odoo_package_width',
             'odoo_package_height', 'notes',
         ]
