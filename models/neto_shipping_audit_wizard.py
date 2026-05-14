@@ -103,10 +103,14 @@ class NetoShippingAuditWizard(models.TransientModel):
             return self._post_getitem(store, url, headers, payload)
 
         all_items = []
-        page = 1
+        # Neto requires at least one real item filter; Page/Limit alone can
+        # return an empty response even when products exist.
+        active_filter = ['True', 'False'] if self.include_inactive else ['True']
+        page = 0
         while True:
             payload = {
                 'Filter': {
+                    'IsActive': active_filter,
                     'Page': page,
                     'Limit': _GETITEM_PAGE_SIZE,
                     'OutputSelector': _GETITEM_OUTPUT,
