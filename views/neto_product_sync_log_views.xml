@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="neto_product_sync_log_view_list" model="ir.ui.view">
+        <field name="name">neto.product.sync.log.list</field>
+        <field name="model">neto.product.sync.log</field>
+        <field name="arch" type="xml">
+            <list string="Neto Product Sync Log"
+                  decoration-success="action in ('created', 'updated')"
+                  decoration-warning="action in ('skipped', 'unmatched')"
+                  decoration-danger="action in ('conflict', 'error')">
+                <field name="sync_date"/>
+                <field name="store_id"/>
+                <field name="neto_sku"/>
+                <field name="neto_product_id" optional="show"/>
+                <field name="product_id"/>
+                <field name="action" widget="badge"
+                       decoration-success="action in ('created', 'updated')"
+                       decoration-warning="action in ('skipped', 'unmatched')"
+                       decoration-danger="action in ('conflict', 'error')"/>
+                <field name="reason" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="neto_product_sync_log_view_form" model="ir.ui.view">
+        <field name="name">neto.product.sync.log.form</field>
+        <field name="model">neto.product.sync.log</field>
+        <field name="arch" type="xml">
+            <form string="Neto Product Sync Log">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="sync_date"/>
+                            <field name="store_id"/>
+                            <field name="action" widget="badge"
+                                   decoration-success="action in ('created', 'updated')"
+                                   decoration-warning="action in ('skipped', 'unmatched')"
+                                   decoration-danger="action in ('conflict', 'error')"/>
+                        </group>
+                        <group>
+                            <field name="neto_sku"/>
+                            <field name="neto_product_id"/>
+                            <field name="product_id"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="reason" widget="text"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="neto_product_sync_log_view_pivot" model="ir.ui.view">
+        <field name="name">neto.product.sync.log.pivot</field>
+        <field name="model">neto.product.sync.log</field>
+        <field name="arch" type="xml">
+            <pivot string="Product Sync Stats">
+                <field name="store_id" type="row"/>
+                <field name="action" type="col"/>
+            </pivot>
+        </field>
+    </record>
+
+    <record id="neto_product_sync_log_action" model="ir.actions.act_window">
+        <field name="name">Product Sync Log</field>
+        <field name="res_model">neto.product.sync.log</field>
+        <field name="view_mode">list,pivot,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No product sync runs yet.
+            </p>
+            <p>
+                Run the Neto product sync to review created, updated, unmatched,
+                conflict, and error records.
+            </p>
+        </field>
+    </record>
+
+</odoo>

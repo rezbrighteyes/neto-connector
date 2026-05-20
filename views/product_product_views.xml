@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="neto_product_product_form_view" model="ir.ui.view">
+        <field name="name">product.product.form.neto.sync</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="product.product_normal_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='default_code']" position="after">
+                <field name="neto_product_id"/>
+                <field name="neto_store_id"/>
+                <field name="neto_parent_sku"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

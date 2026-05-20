@@ -11,4 +11,14 @@
         <field name="active" eval="False"/>
     </record>
 
+    <record id="ir_cron_neto_product_sync" model="ir.cron">
+        <field name="name">Neto: Sync Active Products</field>
+        <field name="model_id" ref="model_neto_product_sync_log"/>
+        <field name="state">code</field>
+        <field name="code">env['neto.connector'].run_product_sync()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="False"/>
+    </record>
+
 </odoo>

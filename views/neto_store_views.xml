@@ -11,6 +11,7 @@
                 <field name="warehouse_id"/>
                 <field name="store_url"/>
                 <field name="last_sync_date"/>
+                <field name="last_product_sync_date" optional="show"/>
                 <field name="active"/>
             </list>
         </field>
@@ -32,9 +33,11 @@
                         <group string="Odoo Routing">
                             <field name="company_id"/>
                             <field name="warehouse_id"/>
+                            <field name="neto_default_categ_id"/>
                         </group>
                         <group string="Sync Status">
                             <field name="last_sync_date"/>
+                            <field name="last_product_sync_date"/>
                         </group>
                     </group>
                 </sheet>

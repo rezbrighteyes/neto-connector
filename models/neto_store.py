@@ -13,6 +13,7 @@ class NetoStore(models.Model):
     active = fields.Boolean(string='Active', default=True)
     last_sync_date = fields.Datetime(string='Last Sync', readonly=True)
     last_rma_sync_date = fields.Datetime(string='Last RMA Sync', readonly=True)
+    last_product_sync_date = fields.Datetime(string='Last Product Sync', readonly=True)
     company_id = fields.Many2one(
         'res.company', string='Company', required=True,
         default=lambda self: self.env.company,
@@ -20,4 +21,9 @@ class NetoStore(models.Model):
     warehouse_id = fields.Many2one(
         'stock.warehouse', string='Warehouse', required=True,
         domain="[('company_id', '=', company_id)]",
+    )
+    neto_default_categ_id = fields.Many2one(
+        'product.category',
+        string='Default Product Category',
+        help='Fallback category used when Neto returns no usable category data.',
     )

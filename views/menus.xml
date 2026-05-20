@@ -28,6 +28,12 @@
               action="neto_sync_log_action"
               sequence="10"/>
 
+    <menuitem id="menu_neto_product_sync_log"
+              name="Product Sync Log"
+              parent="menu_neto_sync_root"
+              action="neto_product_sync_log_action"
+              sequence="12"/>
+
     <!-- Run Sync Now: opens date-range wizard -->
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"
