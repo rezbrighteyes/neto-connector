@@ -4,6 +4,7 @@ import logging
 import requests
 
 from odoo import fields, models
+from odoo.exceptions import ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -14,6 +15,7 @@ _CATCHALL_PARENT_NAME = 'Neto'
 _CATCHALL_CHILD_NAME = 'Uncategorized'
 _GLE_REVIEW_TAG = 'pricing-needs-review'
 _NETO_VARIANT_ATTRIBUTE = 'Neto Variant SKU'
+_EDBERT_COMPANY_ID = 1
 _PRODUCT_OUTPUT_SELECTOR = [
     'ID',
     'InventoryID',
@@ -47,6 +49,18 @@ def _to_float(value):
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _get_sku_variants(value):
+    sku = (value or '').strip()
+    if not sku:
+        return []
+    variants = [sku]
+    if sku.lower().startswith('pack_'):
+        stripped = sku[5:]
+        if stripped:
+            variants.append(stripped)
+    return variants
 
 
 class ProductTemplate(models.Model):
@@ -219,8 +233,12 @@ class NetoConnector(models.AbstractModel):
         return tag
 
     def _ensure_company_on_template(self, template, company):
-        if company.id not in template.company_ids.ids:
-            template.sudo().write({'company_ids': [(4, company.id)]})
+        commands = []
+        for company_id in (_EDBERT_COMPANY_ID, company.id):
+            if company_id and company_id not in template.company_ids.ids:
+                commands.append((4, company_id))
+        if commands:
+            template.sudo().write({'company_ids': commands})
 
     def _set_pricing_review_tag(self, template):
         if 'product_tag_ids' not in template._fields:
@@ -273,6 +291,7 @@ class NetoConnector(models.AbstractModel):
         Product = self.env['product.product'].sudo()
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
         sku = (item.get('SKU') or '').strip()
+        sku_variants = _get_sku_variants(sku)
         if neto_product_id:
             product = Product.search([
                 ('neto_store_id', '=', store.id),
@@ -280,14 +299,15 @@ class NetoConnector(models.AbstractModel):
             ], limit=1)
             if product:
                 return product, False
-        if sku and 'x_studio_neto_reference' in Product._fields:
-            products = Product.search([('x_studio_neto_reference', '=', sku)])
-            if len(products) == 1:
-                return products, False
-            if len(products) > 1:
-                return False, True
-        if sku:
-            products = Product.search([('default_code', '=', sku)])
+        if 'x_studio_neto_reference' in Product._fields:
+            for sku_variant in sku_variants:
+                products = Product.search([('x_studio_neto_reference', '=', sku_variant)])
+                if len(products) == 1:
+                    return products, False
+                if len(products) > 1:
+                    return False, True
+        for sku_variant in sku_variants:
+            products = Product.search([('default_code', '=', sku_variant)])
             if len(products) == 1:
                 return products, False
             if len(products) > 1:
@@ -322,7 +342,7 @@ class NetoConnector(models.AbstractModel):
         template = ProductTemplate.create({
             'name': (item.get('Name') or parent_sku or 'Neto Product').strip(),
             'categ_id': category.id,
-            'company_ids': [(4, store.company_id.id)],
+            'company_ids': [(4, _EDBERT_COMPANY_ID), (4, store.company_id.id)],
             'neto_parent_sku': parent_sku,
             'sale_ok': True,
             'purchase_ok': True,
@@ -376,7 +396,7 @@ class NetoConnector(models.AbstractModel):
         template = ProductTemplate.create({
             'name': (item.get('Name') or item.get('SKU') or 'Neto Product').strip(),
             'categ_id': category.id,
-            'company_ids': [(4, store.company_id.id)],
+            'company_ids': [(4, _EDBERT_COMPANY_ID), (4, store.company_id.id)],
             'sale_ok': True,
             'purchase_ok': True,
             'active': True,
@@ -404,6 +424,9 @@ class NetoConnector(models.AbstractModel):
             values['x_studio_neto_reference'] = sku or False
         return values
 
+    def _is_barcode_conflict(self, exc):
+        return isinstance(exc, ValidationError) and 'Barcode(s) already assigned' in str(exc)
+
     def _write_product_record(self, product, template, store, item, category, action, reason=False):
         price_values = self._get_price_values(store, item)
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
@@ -418,7 +441,16 @@ class NetoConnector(models.AbstractModel):
         template.sudo().write(template_values)
         self._ensure_company_on_template(template, store.company_id)
         product_values = self._prepare_product_write_values(store, item, price_values, action, reason=reason)
-        product.sudo().write(product_values)
+        try:
+            product.sudo().write(product_values)
+        except ValidationError as exc:
+            if not self._is_barcode_conflict(exc):
+                raise
+            barcode_value = product_values.pop('barcode', False)
+            retry_reason = f'Barcode conflict on {barcode_value}; kept existing Odoo barcode'
+            product_values['neto_product_sync_note'] = retry_reason
+            product.sudo().write(product_values)
+            self._log_product_sync(store, item, 'skipped', product=product, reason=retry_reason)
         if store.id == 5:
             self._set_pricing_review_tag(template)
 
