@@ -430,10 +430,13 @@ class NetoConnector(models.AbstractModel):
     def _write_product_record(self, product, template, store, item, category, action, reason=False):
         price_values = self._get_price_values(store, item)
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
+        for company in template.company_ids:
+            template.sudo().with_company(company).write({
+                'standard_price': price_values['cost_price'],
+            })
         template_values = {
             'categ_id': category.id,
             'list_price': price_values['sale_price'],
-            'standard_price': price_values['cost_price'],
             'active': True,
         }
         if not is_variant:
