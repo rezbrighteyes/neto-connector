@@ -405,13 +405,12 @@ class NetoConnector(models.AbstractModel):
         })
         return template.product_variant_ids[:1], template
 
-    def _prepare_product_write_values(self, store, item, price_values, action, reason=False):
+    def _prepare_product_write_values(self, store, item, price_values, action, reason=False, product=False):
         sku = (item.get('SKU') or '').strip()
         barcode = next((value for value in self._get_barcode_candidates(item) if value), False)
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
         parent_sku = (item.get('ParentSKU') or '').strip()
         values = {
-            'default_code': sku or False,
             'barcode': barcode or False,
             'recommended_retail_price': price_values['rrp_ex'],
             'standard_price': price_values['cost_price'],
@@ -422,6 +421,9 @@ class NetoConnector(models.AbstractModel):
             'neto_product_sync_state': action,
             'neto_product_sync_note': reason or False,
         }
+        # Preserve an existing Odoo internal reference on matched products.
+        if not product or not product.default_code:
+            values['default_code'] = sku or False
         if 'x_studio_neto_reference' in self.env['product.product']._fields:
             values['x_studio_neto_reference'] = sku or False
         return values
@@ -446,7 +448,9 @@ class NetoConnector(models.AbstractModel):
             template_values['name'] = (item.get('Name') or item.get('SKU') or template.name).strip()
         template.sudo().write(template_values)
         self._ensure_company_on_template(template, store.company_id)
-        product_values = self._prepare_product_write_values(store, item, price_values, action, reason=reason)
+        product_values = self._prepare_product_write_values(
+            store, item, price_values, action, reason=reason, product=product,
+        )
         try:
             product.sudo().write(product_values)
         except ValidationError as exc:
