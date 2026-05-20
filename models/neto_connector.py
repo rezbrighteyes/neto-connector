@@ -48,12 +48,15 @@ _GET_ORDER_PAGE_SIZE = 50
 
 # GetItem OutputSelectors we need for product creation
 _GETITEM_OUTPUT = [
+    'ID', 'InventoryID',
+    'SKU', 'ParentSKU',
     'Name', 'Brand', 'Model',
-    'DefaultPrice', 'RRP', 'CostPrice',
+    'DefaultPrice', 'RRP', 'CostPrice', 'DefaultPurchasePrice',
     'TaxInclusive',
     'UPC', 'UPC1',
     'ShippingWeight',
-    'IsActive',
+    'IsActive', 'IsVariant',
+    'Categories', 'ReferenceNumber', 'PriceGroups',
 ]
 
 # GetOrder OutputSelector — single source of truth used by both connector and wizard

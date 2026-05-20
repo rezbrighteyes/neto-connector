@@ -251,19 +251,21 @@ class NetoConnector(models.AbstractModel):
         rrp_ex = round(_to_float(item.get('RRP')) / _GST_DIVISOR, 4)
         default_price_ex = round(_to_float(item.get('DefaultPrice')) / _GST_DIVISOR, 4)
         cost_price = round(_to_float(item.get('CostPrice')), 4)
+        default_purchase_price = round(_to_float(item.get('DefaultPurchasePrice')), 4)
+        resolved_cost_price = cost_price if cost_price > 0 else default_purchase_price
         if store.id == 1:
             list_price = default_price_ex
         else:
             brighteyes_raw = self._get_brighteyes_price(item)
             brighteyes_ex = round((_to_float(brighteyes_raw) / _GST_DIVISOR), 4) if brighteyes_raw else 0.0
-            if brighteyes_ex > 0 and brighteyes_ex > cost_price:
+            if brighteyes_ex > 0 and brighteyes_ex > resolved_cost_price:
                 list_price = brighteyes_ex
             else:
                 list_price = round(rrp_ex / 2.0, 4)
         return {
             'sale_price': list_price,
             'rrp_ex': rrp_ex,
-            'cost_price': cost_price,
+            'cost_price': resolved_cost_price,
         }
 
     def _get_barcode_candidates(self, item):
@@ -430,10 +432,11 @@ class NetoConnector(models.AbstractModel):
     def _write_product_record(self, product, template, store, item, category, action, reason=False):
         price_values = self._get_price_values(store, item)
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
-        for company in template.company_ids:
-            template.sudo().with_company(company).write({
-                'standard_price': price_values['cost_price'],
-            })
+        if price_values['cost_price'] > 0:
+            for company in template.company_ids:
+                template.sudo().with_company(company).write({
+                    'standard_price': price_values['cost_price'],
+                })
         template_values = {
             'categ_id': category.id,
             'list_price': price_values['sale_price'],
