@@ -249,6 +249,7 @@ class NetoConnector(models.AbstractModel):
             'parent_id':  partner.id,
             'type':       'delivery',
             'name':       display_name,
+            'company_id': False,
             'street':     street1 or False,
             'street2':    street2 or False,
             'city':       city or False,
@@ -263,6 +264,29 @@ class NetoConnector(models.AbstractModel):
             partner.name, display_name,
         )
         return ship_partner
+
+    def _ensure_partner_company_compatibility(self, partner, store, username=None):
+        """Make Neto-linked customer partners company-neutral when needed.
+
+        Neto history and multi-store syncs can legitimately reuse the same
+        partner across companies. A company-bound partner causes sale.order
+        creation to fail when the order belongs to another company, so we
+        relax the partner to shared/company-neutral in that case.
+        """
+        if not partner.company_id or partner.company_id == store.company_id:
+            return partner
+
+        _logger.warning(
+            'Neto sync: partner "%s" (username=%s) belongs to company "%s" '
+            'but store "%s" uses company "%s" — clearing partner company_id',
+            partner.display_name,
+            username or partner.neto_username or '',
+            partner.company_id.display_name,
+            store.name,
+            store.company_id.display_name,
+        )
+        partner.sudo().write({'company_id': False})
+        return partner
 
     # -------------------------------------------------------------------------
     # Auto-create missing products via GetItem
@@ -397,7 +421,7 @@ class NetoConnector(models.AbstractModel):
     # API — with pagination
     # -------------------------------------------------------------------------
 
-    def _fetch_orders(self, store, since_dt, until_dt=None):
+    def _fetch_orders_page(self, store, since_dt, page=1, until_dt=None):
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -410,78 +434,75 @@ class NetoConnector(models.AbstractModel):
         }
         if until_dt:
             date_filter['DateUpdatedTo'] = until_dt.strftime('%Y-%m-%dT%H:%M:%S')
+        payload = {
+            'Filter': {
+                **date_filter,
+                'Page': page,
+                'Limit': _GET_ORDER_PAGE_SIZE,
+                'OutputSelector': GET_ORDER_OUTPUT_SELECTOR,
+            }
+        }
+        _logger.info(
+            'Neto sync [%s]: POST %s  page=%d', store.name, url, page
+        )
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        _logger.info(
+            'Neto sync [%s]: HTTP %s  content-length=%s',
+            store.name, response.status_code, len(response.content),
+        )
+        response.raise_for_status()
+
+        body = response.json()
+        _logger.info(
+            'Neto sync [%s]: response top-level keys=%s  Ack=%s',
+            store.name,
+            list(body.keys()),
+            body.get('Ack') or body.get('GetOrderResponse', {}).get('Ack', 'n/a'),
+        )
+
+        if 'GetOrderResponse' in body:
+            orders = body['GetOrderResponse'].get('Order', [])
+        else:
+            orders = body.get('Order', [])
+
+        if isinstance(orders, dict):
+            orders = [orders]
+        orders = orders or []
 
         _logger.info(
+            'Neto sync [%s]: page %d — %d order(s)',
+            store.name, page, len(orders),
+        )
+        return orders
+
+    def _fetch_orders(self, store, since_dt, until_dt=None):
+        _logger.info(
             'Neto sync [%s]: fetching orders updated since %s%s',
-            store.name, date_filter['DateUpdatedFrom'],
-            f"  until {date_filter['DateUpdatedTo']}" if until_dt else '',
+            store.name, since_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+            f"  until {until_dt.strftime('%Y-%m-%dT%H:%M:%S')}" if until_dt else '',
         )
 
         all_orders = []
         page = 1
-
         while True:
-            payload = {
-                'Filter': {
-                    **date_filter,
-                    'Page': page,
-                    'Limit': _GET_ORDER_PAGE_SIZE,
-                    'OutputSelector': GET_ORDER_OUTPUT_SELECTOR,
-                }
-            }
-            _logger.info(
-                'Neto sync [%s]: POST %s  page=%d', store.name, url, page
-            )
             try:
-                response = requests.post(url, json=payload, headers=headers, timeout=60)
-                _logger.info(
-                    'Neto sync [%s]: HTTP %s  content-length=%s',
-                    store.name, response.status_code, len(response.content),
-                )
-                response.raise_for_status()
+                orders = self._fetch_orders_page(store, since_dt, page=page, until_dt=until_dt)
             except requests.exceptions.RequestException as exc:
                 _logger.error(
                     'Neto sync [%s]: API request failed on page %d — %s',
                     store.name, page, exc,
                 )
                 break
-
-            try:
-                body = response.json()
             except Exception as exc:
                 _logger.error(
-                    'Neto sync [%s]: could not parse JSON on page %d — %s\nRaw: %s',
-                    store.name, page, exc, response.text[:500],
+                    'Neto sync [%s]: could not parse/process page %d — %s',
+                    store.name, page, exc,
                 )
                 break
-
-            _logger.info(
-                'Neto sync [%s]: response top-level keys=%s  Ack=%s',
-                store.name,
-                list(body.keys()),
-                body.get('Ack') or body.get('GetOrderResponse', {}).get('Ack', 'n/a'),
-            )
-
-            if 'GetOrderResponse' in body:
-                orders = body['GetOrderResponse'].get('Order', [])
-            else:
-                orders = body.get('Order', [])
-
-            if isinstance(orders, dict):
-                orders = [orders]
-            orders = orders or []
-
-            _logger.info(
-                'Neto sync [%s]: page %d — %d order(s)',
-                store.name, page, len(orders),
-            )
             all_orders.extend(orders)
-
             if len(orders) < _GET_ORDER_PAGE_SIZE:
-                # Last page
                 break
             page += 1
-
         _logger.info(
             'Neto sync [%s]: %d total order(s) across %d page(s)',
             store.name, len(all_orders), page,
@@ -667,6 +688,7 @@ class NetoConnector(models.AbstractModel):
             'name':          display_name,
             'email':         email or False,
             'is_company':    bool(company),
+            'company_id':    False,
             'customer_rank': 1,
             'street':        order_data.get('BillStreetLine1') or False,
             'street2':       order_data.get('BillStreetLine2') or False,
@@ -1188,6 +1210,9 @@ class NetoConnector(models.AbstractModel):
             partner, partner_created = self._get_or_create_partner(
                 username, order_data, store, synced_customers
             )
+            partner = self._ensure_partner_company_compatibility(
+                partner, store, username=username,
+            )
             sale_order, missing_lines = self._create_sale_order(
                 order_data, partner, store,
                 neto_internal=neto_internal,
@@ -1241,28 +1266,52 @@ class NetoConnector(models.AbstractModel):
             ' [history quotations mode]' if import_as_history else '',
         )
 
-        try:
-            orders = self._fetch_orders(store, since_dt, until_dt=until_dt)
-        except Exception as exc:
-            _logger.error(
-                'Neto sync [%s]: _fetch_orders raised unexpectedly — %s', store.name, exc
-            )
-            return
-
-        store.sudo().write({'last_sync_date': fields.Datetime.now()})
-
-        synced_ids      = set()
+        synced_ids = set()
         synced_customers = set()
-        _logger.info('Neto sync [%s]: %d order(s) to process', store.name, len(orders))
+        processed_orders = 0
+        page = 1
 
-        for order_data in orders:
-            self._process_order(
-                order_data, store, synced_ids, synced_customers,
-                import_as_history=import_as_history,
+        while True:
+            try:
+                orders = self._fetch_orders_page(store, since_dt, page=page, until_dt=until_dt)
+            except requests.exceptions.RequestException as exc:
+                _logger.error(
+                    'Neto sync [%s]: API request failed on page %d — %s',
+                    store.name, page, exc,
+                )
+                break
+            except Exception as exc:
+                _logger.error(
+                    'Neto sync [%s]: _fetch_orders_page failed on page %d — %s',
+                    store.name, page, exc,
+                )
+                break
+
+            if not orders:
+                break
+
+            _logger.info(
+                'Neto sync [%s]: processing %d order(s) from page %d',
+                store.name, len(orders), page,
             )
+            for order_data in orders:
+                self._process_order(
+                    order_data, store, synced_ids, synced_customers,
+                    import_as_history=import_as_history,
+                )
+                processed_orders += 1
+
+            store.sudo().write({'last_sync_date': fields.Datetime.now()})
             self.env.cr.commit()
 
-        _logger.info('Neto sync [%s]: completed.', store.name)
+            if len(orders) < _GET_ORDER_PAGE_SIZE:
+                break
+            page += 1
+
+        _logger.info(
+            'Neto sync [%s]: completed — %d order(s) processed across %d page(s).',
+            store.name, processed_orders, page,
+        )
 
     # -------------------------------------------------------------------------
     # Public entry point (cron)
