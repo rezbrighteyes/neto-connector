@@ -33,6 +33,7 @@
                         <group string="Odoo Routing">
                             <field name="company_id"/>
                             <field name="warehouse_id"/>
+                            <field name="pricelist_id"/>
                             <field name="neto_default_categ_id"/>
                         </group>
                         <group string="Sync Status">

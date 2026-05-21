@@ -51,6 +51,19 @@ def _to_float(value):
         return 0.0
 
 
+def _is_tax_inclusive(item):
+    return str(item.get('TaxInclusive') or '').strip().lower() == 'true'
+
+
+def _to_ex_gst(amount, item):
+    amount = round(_to_float(amount), 4)
+    if amount <= 0:
+        return 0.0
+    if _is_tax_inclusive(item):
+        return round(amount / _GST_DIVISOR, 4)
+    return amount
+
+
 def _get_sku_variants(value):
     sku = (value or '').strip()
     if not sku:
@@ -199,6 +212,39 @@ class NetoConnector(models.AbstractModel):
                     return None
         return None
 
+    def _get_price_group_price(self, item, group_names):
+        groups = item.get('PriceGroups') or []
+        if not groups:
+            return None
+        if isinstance(group_names, str):
+            group_names = [group_names]
+        first = groups[0] if isinstance(groups, list) else groups
+        price_groups = first.get('PriceGroup', {}) if isinstance(first, dict) else {}
+        if isinstance(price_groups, dict):
+            price_groups = [price_groups]
+        target_names = {name.strip().lower() for name in group_names if name}
+        for group in price_groups:
+            if (group.get('Group') or '').strip().lower() in target_names:
+                try:
+                    return float(group.get('Price') or 0)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _is_liaise_store(self, store):
+        values = [
+            (store.name or '').strip().lower(),
+            (store.company_id.name or '').strip().lower(),
+        ]
+        return any('liaise' in value for value in values)
+
+    def _is_global_store(self, store):
+        values = [
+            (store.name or '').strip().lower(),
+            (store.company_id.name or '').strip().lower(),
+        ]
+        return any('global' in value for value in values)
+
     def _get_or_create_catchall_category(self, store):
         if store.neto_default_categ_id:
             return store.neto_default_categ_id
@@ -248,16 +294,18 @@ class NetoConnector(models.AbstractModel):
             template.sudo().write({'product_tag_ids': [(4, tag.id)]})
 
     def _get_price_values(self, store, item):
-        rrp_ex = round(_to_float(item.get('RRP')) / _GST_DIVISOR, 4)
-        default_price_ex = round(_to_float(item.get('DefaultPrice')) / _GST_DIVISOR, 4)
+        rrp_ex = _to_ex_gst(item.get('RRP'), item)
+        default_price_ex = _to_ex_gst(item.get('DefaultPrice'), item)
         cost_price = round(_to_float(item.get('CostPrice')), 4)
         default_purchase_price = round(_to_float(item.get('DefaultPurchasePrice')), 4)
         resolved_cost_price = cost_price if cost_price > 0 else default_purchase_price
-        if store.id == 1:
-            list_price = default_price_ex
+        if self._is_liaise_store(store):
+            catalogue_price = self._get_price_group_price(item, ['Catalogue'])
+            catalogue_ex = _to_ex_gst(catalogue_price, item) if catalogue_price else 0.0
+            list_price = catalogue_ex or default_price_ex
         else:
             brighteyes_raw = self._get_brighteyes_price(item)
-            brighteyes_ex = round((_to_float(brighteyes_raw) / _GST_DIVISOR), 4) if brighteyes_raw else 0.0
+            brighteyes_ex = _to_ex_gst(brighteyes_raw, item) if brighteyes_raw else 0.0
             if brighteyes_ex > 0 and brighteyes_ex > resolved_cost_price:
                 list_price = brighteyes_ex
             else:
@@ -267,6 +315,16 @@ class NetoConnector(models.AbstractModel):
             'rrp_ex': rrp_ex,
             'cost_price': resolved_cost_price,
         }
+
+    def _select_active_unique_match(self, products):
+        if not products:
+            return False, False
+        active = products.filtered(lambda product: product.active)
+        if len(active) == 1:
+            return active, False
+        if len(products) == 1:
+            return products, False
+        return False, True
 
     def _get_barcode_candidates(self, item):
         values = []
@@ -304,16 +362,14 @@ class NetoConnector(models.AbstractModel):
         if 'x_studio_neto_reference' in Product._fields:
             for sku_variant in sku_variants:
                 products = Product.search([('x_studio_neto_reference', '=', sku_variant)])
-                if len(products) == 1:
-                    return products, False
-                if len(products) > 1:
-                    return False, True
+                matched, conflict = self._select_active_unique_match(products)
+                if matched or conflict:
+                    return matched, conflict
         for sku_variant in sku_variants:
             products = Product.search([('default_code', '=', sku_variant)])
-            if len(products) == 1:
-                return products, False
-            if len(products) > 1:
-                return False, True
+            matched, conflict = self._select_active_unique_match(products)
+            if matched or conflict:
+                return matched, conflict
         barcode_candidates = self._get_barcode_candidates(item)
         if barcode_candidates:
             products = Product.search([('barcode', 'in', barcode_candidates)])
@@ -321,6 +377,28 @@ class NetoConnector(models.AbstractModel):
             if matched or conflict:
                 return matched, conflict
         return False, False
+
+    def _sync_pricelist_price(self, store, product, sale_price):
+        pricelist = store.pricelist_id
+        if not pricelist:
+            return
+        PricelistItem = self.env['product.pricelist.item'].sudo()
+        item = PricelistItem.search([
+            ('pricelist_id', '=', pricelist.id),
+            ('applied_on', '=', '0_product_variant'),
+            ('product_id', '=', product.id),
+        ], limit=1)
+        values = {
+            'pricelist_id': pricelist.id,
+            'applied_on': '0_product_variant',
+            'product_id': product.id,
+            'compute_price': 'fixed',
+            'fixed_price': sale_price,
+        }
+        if item:
+            item.write(values)
+        else:
+            PricelistItem.create(values)
 
     def _get_variant_attribute(self):
         Attribute = self.env['product.attribute'].sudo()
@@ -435,15 +513,15 @@ class NetoConnector(models.AbstractModel):
         price_values = self._get_price_values(store, item)
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
         if price_values['cost_price'] > 0:
-            for company in template.company_ids:
-                template.sudo().with_company(company).write({
-                    'standard_price': price_values['cost_price'],
-                })
+            template.sudo().with_company(store.company_id).write({
+                'standard_price': price_values['cost_price'],
+            })
         template_values = {
             'categ_id': category.id,
-            'list_price': price_values['sale_price'],
             'active': True,
         }
+        if not store.pricelist_id:
+            template_values['list_price'] = price_values['sale_price']
         if not is_variant:
             template_values['name'] = (item.get('Name') or item.get('SKU') or template.name).strip()
         template.sudo().write(template_values)
@@ -461,7 +539,8 @@ class NetoConnector(models.AbstractModel):
             product_values['neto_product_sync_note'] = retry_reason
             product.sudo().write(product_values)
             self._log_product_sync(store, item, 'skipped', product=product, reason=retry_reason)
-        if store.id == 5:
+        self._sync_pricelist_price(store, product, price_values['sale_price'])
+        if self._is_global_store(store):
             self._set_pricing_review_tag(template)
 
     def _log_product_sync(self, store, item, action, product=False, reason=False):
@@ -543,10 +622,9 @@ class NetoConnector(models.AbstractModel):
                 continue
             related_store = product.neto_store_id
             if not related_store:
-                if 2 in product.product_tmpl_id.company_ids.ids and 1 in signatures_by_store:
-                    related_store = stores.filtered(lambda store: store.id == 1)[:1]
-                elif 3 in product.product_tmpl_id.company_ids.ids and 5 in signatures_by_store:
-                    related_store = stores.filtered(lambda store: store.id == 5)[:1]
+                related_store = stores.filtered(
+                    lambda store: store.company_id.id in product.product_tmpl_id.company_ids.ids
+                )[:1]
             if not related_store:
                 continue
             signatures = signatures_by_store.get(related_store.id, {})

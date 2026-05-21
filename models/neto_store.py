@@ -22,6 +22,12 @@ class NetoStore(models.Model):
         'stock.warehouse', string='Warehouse', required=True,
         domain="[('company_id', '=', company_id)]",
     )
+    pricelist_id = fields.Many2one(
+        'product.pricelist',
+        string='Sales Pricelist',
+        domain="[('company_id', 'in', [company_id, False])]",
+        help='Optional company/store sales pricelist updated by the Neto product sync.',
+    )
     neto_default_categ_id = fields.Many2one(
         'product.category',
         string='Default Product Category',
