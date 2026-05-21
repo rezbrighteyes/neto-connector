@@ -19,7 +19,6 @@ _SHIPPING_SKU  = 'NETO_SHIPPING'   # internal product SKU for shipping lines
 _SKIP_SKU_PREFIXES = (
     'DS_',
     'REPVISIT_',
-    'pack_',
     'p_header_',
     'stand_',
     'catalogue_',
