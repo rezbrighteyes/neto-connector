@@ -35,7 +35,7 @@ class NetoPriceMap(models.Model):
     rrp = fields.Float(string='RRP', digits='Product Price')
     note = fields.Char(string='Notes')
 
-    @fields.depends('store_id.company_id')
+    @api.depends('store_id.company_id')
     def _compute_company_id(self):
         for record in self:
             record.company_id = record.store_id.company_id
