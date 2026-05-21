@@ -403,6 +403,7 @@ class NetoConnector(models.AbstractModel):
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
         sku = (item.get('SKU') or '').strip()
         sku_variants = _get_sku_variants(sku)
+        saw_ambiguous_sku_match = False
         if neto_product_id:
             product = Product.search([
                 ('neto_store_id', '=', store.id),
@@ -410,23 +411,31 @@ class NetoConnector(models.AbstractModel):
             ], limit=1)
             if product:
                 return product, False
-        if 'x_studio_neto_reference' in Product._fields:
-            for sku_variant in sku_variants:
-                products = Product.search([('x_studio_neto_reference', '=', sku_variant)])
-                matched, conflict = self._select_active_unique_match(products)
-                if matched or conflict:
-                    return matched, conflict
-        for sku_variant in sku_variants:
-            products = Product.search([('default_code', '=', sku_variant)])
-            matched, conflict = self._select_active_unique_match(products)
-            if matched or conflict:
-                return matched, conflict
         barcode_candidates = self._get_barcode_candidates(item)
         if barcode_candidates:
             products = Product.search([('barcode', 'in', barcode_candidates)])
             matched, conflict = self._select_barcode_match(products)
-            if matched or conflict:
-                return matched, conflict
+            if matched:
+                return matched, False
+            if conflict:
+                return False, True
+        if 'x_studio_neto_reference' in Product._fields:
+            for sku_variant in sku_variants:
+                products = Product.search([('x_studio_neto_reference', '=', sku_variant)])
+                matched, conflict = self._select_active_unique_match(products)
+                if matched:
+                    return matched, False
+                if conflict:
+                    saw_ambiguous_sku_match = True
+        for sku_variant in sku_variants:
+            products = Product.search([('default_code', '=', sku_variant)])
+            matched, conflict = self._select_active_unique_match(products)
+            if matched:
+                return matched, False
+            if conflict:
+                saw_ambiguous_sku_match = True
+        if saw_ambiguous_sku_match:
+            return False, True
         return False, False
 
     def _sync_pricelist_price(self, pricelist, product, sale_price):
