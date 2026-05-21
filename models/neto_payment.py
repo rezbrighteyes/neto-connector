@@ -89,17 +89,12 @@ class NetoPayment(models.Model):
         help='True until the payment is linked to a sale order.',
     )
 
-    _sql_constraints = [
-        (
-            'neto_payment_id_unique',
-            'unique(neto_payment_id)',
-            'Neto Payment ID must be unique.',
-        ),
-    ]
-
     @api.model
     def _default_aud_currency(self):
-        return self.env.ref('base.AUD', raise_if_not_found=False) or self.env.company.currency_id
+        return (
+            self.env['res.currency'].sudo().search([('name', '=', 'AUD')], limit=1)
+            or self.env.company.currency_id
+        )
 
     @api.depends('date_paid', 'sale_order_id.date_order')
     def _compute_payment_timing(self):

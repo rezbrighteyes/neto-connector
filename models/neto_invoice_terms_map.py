@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from odoo import api, fields, models
+from odoo import fields, models
 from odoo.exceptions import ValidationError
 
 
@@ -14,12 +14,6 @@ class NetoInvoiceTermsMap(models.Model):
         string='Store',
         help='Optional store scope. Leave blank to allow the row to apply to any store.',
     )
-    company_id = fields.Many2one(
-        'res.company',
-        string='Company',
-        compute='_compute_company_id',
-        store=True,
-    )
     neto_invoice_terms = fields.Char(
         string='Neto Invoice Terms',
         required=True,
@@ -30,14 +24,8 @@ class NetoInvoiceTermsMap(models.Model):
         'account.payment.term',
         string='Odoo Payment Terms',
         required=True,
-        domain="[('company_id', 'in', [company_id, False])]",
     )
     note = fields.Char(string='Notes')
-
-    @api.depends('store_id.company_id')
-    def _compute_company_id(self):
-        for record in self:
-            record.company_id = record.store_id.company_id
 
     @api.constrains('store_id', 'neto_invoice_terms')
     def _check_duplicate_terms(self):

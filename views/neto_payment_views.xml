@@ -5,7 +5,7 @@
         <field name="name">neto.payment.list</field>
         <field name="model">neto.payment</field>
         <field name="arch" type="xml">
-            <list string="Neto Payments" create="0">
+            <list string="Neto Payments">
                 <field name="date_paid"/>
                 <field name="neto_payment_id"/>
                 <field name="neto_order_id"/>
@@ -26,7 +26,7 @@
         <field name="name">neto.payment.form</field>
         <field name="model">neto.payment</field>
         <field name="arch" type="xml">
-            <form string="Neto Payment" create="0">
+            <form string="Neto Payment">
                 <sheet>
                     <group>
                         <group string="Neto">
@@ -77,7 +77,6 @@
                 <group expand="0" string="Group By">
                     <filter name="group_store" string="Store" context="{'group_by': 'store_id'}"/>
                     <filter name="group_method" string="Payment Method" context="{'group_by': 'payment_method_name'}"/>
-                    <filter name="group_month" string="Date Paid" context="{'group_by': 'date_paid:month'}"/>
                 </group>
             </search>
         </field>

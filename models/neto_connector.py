@@ -620,7 +620,10 @@ class NetoConnector(models.AbstractModel):
         neto_payment_id = str(payment_data.get('PaymentID') or '').strip()
         neto_order_id = str(payment_data.get('OrderID') or '').strip()
         sale_order = self._find_payment_sale_order(store, neto_order_id)
-        currency = self.env.ref('base.AUD', raise_if_not_found=False) or store.company_id.currency_id
+        currency = (
+            self.env['res.currency'].sudo().search([('name', '=', 'AUD')], limit=1)
+            or store.company_id.currency_id
+        )
 
         return {
             'neto_payment_id': neto_payment_id,

@@ -25,7 +25,6 @@
                         <group string="Neto">
                             <field name="active"/>
                             <field name="store_id"/>
-                            <field name="company_id" readonly="1"/>
                             <field name="neto_invoice_terms"/>
                         </group>
                         <group string="Odoo">
