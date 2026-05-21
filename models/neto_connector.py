@@ -368,11 +368,9 @@ class NetoConnector(models.AbstractModel):
                     return product, False
                 if conflict:
                     _logger.warning(
-                        'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
-                        'skipping auto-create to avoid linking the wrong product',
+                        'Neto sync: SKU=%s is ambiguous — creating [NETO-UNSYNCED] placeholder',
                         sku,
                     )
-                    return None, False
             neto_barcode = (item.get('UPC') or item.get('UPC1') or '').strip()
             if neto_barcode:
                 product = Product.search([('barcode', '=', neto_barcode)], limit=1)
@@ -385,11 +383,10 @@ class NetoConnector(models.AbstractModel):
 
         if conflict_on_default_code:
             _logger.warning(
-                'Neto sync: SKU=%s matches multiple Odoo products by default_code and '
-                'could not be resolved — skipping auto-create',
+                'Neto sync: SKU=%s matches multiple Odoo products by default_code — '
+                'creating [NETO-UNSYNCED] placeholder',
                 sku,
             )
-            return None, False
 
         if item and item.get('Name'):
             base_name = item['Name'].strip()
