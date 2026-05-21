@@ -30,6 +30,12 @@ class NetoSyncWizard(models.TransientModel):
              '(Date Paid, Payment Method, Delivery Address) from the latest API data '
              'without creating a duplicate.',
     )
+    import_as_history = fields.Boolean(
+        string='Import As History Quotations',
+        default=False,
+        help='If enabled, imported Neto orders stay as quotations/drafts and skip '
+             'invoice creation so historical syncs do not affect outstanding balances.',
+    )
     # --- Date range mode ---
     date_from = fields.Datetime(
         string='Date From',
@@ -153,7 +159,10 @@ class NetoSyncWizard(models.TransientModel):
 
         connector = self.env['neto.connector']
         synced_ids = set()
-        connector._process_order(order_data, store, synced_ids)
+        connector._process_order(
+            order_data, store, synced_ids,
+            import_as_history=self.import_as_history,
+        )
         self.env.cr.commit()
 
         sale_order = self.env['sale.order'].sudo().search(
@@ -187,7 +196,10 @@ class NetoSyncWizard(models.TransientModel):
         until_dt = date_to.replace(tzinfo=timezone.utc) if date_to else None
 
         connector = self.env['neto.connector']
-        connector._sync_store(store, since_dt=since_dt, until_dt=until_dt)
+        connector._sync_store(
+            store, since_dt=since_dt, until_dt=until_dt,
+            import_as_history=self.import_as_history,
+        )
 
         label = f"{date_from.strftime('%d/%m/%Y %H:%M')}"
         if date_to:

@@ -49,6 +49,13 @@ class SaleOrder(models.Model):
              'BrightEyes internal replenishment orders. '
              'Fully synced but can be filtered out of sales reports.',
     )
+    neto_history_import = fields.Boolean(
+        string='Neto History Import',
+        copy=False,
+        readonly=True,
+        help='True when this Neto order was imported in history mode as a quotation '
+             'to preserve reporting/outstanding balances.',
+    )
     neto_internal_label = fields.Char(
         string='Internal Label',
         compute='_compute_neto_internal_label',

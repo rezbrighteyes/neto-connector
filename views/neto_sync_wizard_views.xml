@@ -12,6 +12,7 @@
                     <field name="order_id_input"
                            string="Neto Order ID"
                            placeholder="e.g. GLE39259 or LIA36217"/>
+                    <field name="import_as_history"/>
                     <field name="force_resync"
                            string="Force Re-sync"
                            help="Tick this if the order already exists in Odoo. 
@@ -51,6 +52,7 @@
                     <field name="date_to" widget="datetime"
                            string="To"
                            placeholder="To date/time (UTC) — leave blank for now"/>
+                    <field name="import_as_history"/>
                 </group>
                 <footer>
                     <button name="action_sync_order"

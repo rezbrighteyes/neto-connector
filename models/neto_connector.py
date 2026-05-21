@@ -793,9 +793,11 @@ class NetoConnector(models.AbstractModel):
     # Order creation / state management
     # -------------------------------------------------------------------------
 
-    def _set_order_state(self, order, order_id, order_status, date_order, line_prices):
+    def _set_order_state(self, order, order_id, order_status, date_order, line_prices, import_as_history=False):
         """Set the final state of a synced sale order."""
-        if order_status in _CANCEL_STATUSES:
+        if import_as_history:
+            target_state = 'draft'
+        elif order_status in _CANCEL_STATUSES:
             target_state = 'cancel'
         else:
             target_state = 'sale'
@@ -825,7 +827,7 @@ class NetoConnector(models.AbstractModel):
         )
         return target_state
 
-    def _create_sale_order(self, order_data, partner, store, neto_internal=False):
+    def _create_sale_order(self, order_data, partner, store, neto_internal=False, import_as_history=False):
         Order     = self.env['sale.order'].sudo()
         OrderLine = self.env['sale.order.line'].sudo()
         Product   = self.env['product.product'].sudo()
@@ -850,6 +852,7 @@ class NetoConnector(models.AbstractModel):
             'neto_order_id':        order_id,
             'neto_order_status':    order_status,
             'neto_internal':        neto_internal,
+            'neto_history_import':  import_as_history,
             'date_order':           date_order,
             'warehouse_id':         store.warehouse_id.id,
             'company_id':           store.company_id.id,
@@ -1003,7 +1006,8 @@ class NetoConnector(models.AbstractModel):
 
         # --- Set final order state ---
         final_state = self._set_order_state(
-            order, order_id, order_status, date_order, line_prices
+            order, order_id, order_status, date_order, line_prices,
+            import_as_history=import_as_history,
         )
 
         # --- Invoice creation logic ---
@@ -1024,6 +1028,11 @@ class NetoConnector(models.AbstractModel):
                     'Neto sync: order %s is older than %d days and unpaid — skipping invoice',
                     order_id, _INVOICE_CUTOFF_DAYS,
                 )
+        elif import_as_history:
+            _logger.info(
+                'Neto sync: order %s imported in history mode — left as quotation and skipped invoice creation',
+                order_id,
+            )
 
         # -----------------------------------------------------------------------
         # Post chatter message
@@ -1032,6 +1041,13 @@ class NetoConnector(models.AbstractModel):
 
         if neto_internal:
             msg_parts.append(Markup('<p>⚠️ No billable items.</p>'))
+
+        if import_as_history:
+            msg_parts.append(Markup(
+                '<p>&#128221; <strong>Imported as history quotation.</strong> '
+                'This Neto order was intentionally left unconfirmed so it does not affect '
+                'outstanding amounts or live sales workflow.</p>'
+            ))
 
         if order_status in _CANCEL_STATUSES:
             msg_parts.append(Markup(
@@ -1126,7 +1142,7 @@ class NetoConnector(models.AbstractModel):
     # Per-order processing
     # -------------------------------------------------------------------------
 
-    def _process_order(self, order_data, store, synced_ids, synced_customers=None):
+    def _process_order(self, order_data, store, synced_ids, synced_customers=None, import_as_history=False):
         if synced_customers is None:
             synced_customers = set()
         SyncLog = self.env['neto.sync.log'].sudo()
@@ -1173,7 +1189,9 @@ class NetoConnector(models.AbstractModel):
                 username, order_data, store, synced_customers
             )
             sale_order, missing_lines = self._create_sale_order(
-                order_data, partner, store, neto_internal=neto_internal
+                order_data, partner, store,
+                neto_internal=neto_internal,
+                import_as_history=import_as_history,
             )
             line_count = len(sale_order.order_line)
             missing_skus_text = ', '.join(m['sku'] for m in missing_lines) if missing_lines else False
@@ -1197,7 +1215,7 @@ class NetoConnector(models.AbstractModel):
     # Per-store sync
     # -------------------------------------------------------------------------
 
-    def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None):
+    def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None, import_as_history=False):
         # Suppress all email notifications during sync
         self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
         if not store.api_key or not store.store_url:
@@ -1217,9 +1235,10 @@ class NetoConnector(models.AbstractModel):
             since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
 
         _logger.info(
-            'Neto sync [%s]: fetching orders updated since %s%s',
+            'Neto sync [%s]: fetching orders updated since %s%s%s',
             store.name, since_dt,
             f' until {until_dt}' if until_dt else '',
+            ' [history quotations mode]' if import_as_history else '',
         )
 
         try:
@@ -1237,7 +1256,10 @@ class NetoConnector(models.AbstractModel):
         _logger.info('Neto sync [%s]: %d order(s) to process', store.name, len(orders))
 
         for order_data in orders:
-            self._process_order(order_data, store, synced_ids, synced_customers)
+            self._process_order(
+                order_data, store, synced_ids, synced_customers,
+                import_as_history=import_as_history,
+            )
             self.env.cr.commit()
 
         _logger.info('Neto sync [%s]: completed.', store.name)
