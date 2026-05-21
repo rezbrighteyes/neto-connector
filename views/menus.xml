@@ -46,6 +46,12 @@
               action="neto_price_map_action"
               sequence="13"/>
 
+    <menuitem id="menu_neto_invoice_terms_maps"
+              name="Invoice Terms Maps"
+              parent="menu_neto_sync_root"
+              action="neto_invoice_terms_map_action"
+              sequence="16"/>
+
     <!-- Run Sync Now: opens date-range wizard -->
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"

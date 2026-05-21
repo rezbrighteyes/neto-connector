@@ -443,7 +443,20 @@ class NetoConnector(models.AbstractModel):
             vals['weight'] = weight
 
         try:
-            product = Product.create(vals)
+            product = Product.with_context(default_company_id=False).create(vals)
+            shared_vals = {}
+            if 'company_id' in product._fields and product.company_id:
+                shared_vals['company_id'] = False
+            if shared_vals:
+                product.write(shared_vals)
+            template = product.product_tmpl_id
+            template_vals = {}
+            if 'company_id' in template._fields and template.company_id:
+                template_vals['company_id'] = False
+            if 'company_ids' in template._fields and template.company_ids:
+                template_vals['company_ids'] = [(5, 0, 0)]
+            if template_vals:
+                template.write(template_vals)
             _logger.info(
                 'Neto sync: auto-created product "%s" (SKU=%s, price=%.4f, barcode=%s)',
                 product_name, sku, list_price, barcode or 'none',
@@ -846,14 +859,12 @@ class NetoConnector(models.AbstractModel):
 
         invoice_terms = (customer.get('DefaultInvoiceTerms') or '').strip()
         if invoice_terms:
-            term = self.env['account.payment.term'].sudo().search(
-                [('name', 'ilike', invoice_terms)], limit=1
-            )
-            if term:
-                vals['property_payment_term_id'] = term.id
+            terms_map = self._find_invoice_terms_map(store, invoice_terms)
+            if terms_map:
+                vals['property_payment_term_id'] = terms_map.payment_term_id.id
             else:
                 _logger.warning(
-                    'Neto sync: payment term "%s" not found for username %s — leaving unchanged',
+                    'Neto sync: payment term map "%s" not found for username %s — leaving unchanged',
                     invoice_terms, username,
                 )
 
@@ -887,6 +898,22 @@ class NetoConnector(models.AbstractModel):
                 'Neto sync: could not write customer fields for username %s — %s',
                 username, exc,
             )
+
+    def _find_invoice_terms_map(self, store, invoice_terms):
+        normalized_terms = (invoice_terms or '').strip()
+        if not normalized_terms:
+            return self.env['neto.invoice.terms.map']
+
+        TermsMap = self.env['neto.invoice.terms.map'].sudo()
+        domain_base = [
+            ('active', '=', True),
+            ('neto_invoice_terms', '=ilike', normalized_terms),
+        ]
+        if store:
+            store_map = TermsMap.search(domain_base + [('store_id', '=', store.id)], limit=1)
+            if store_map:
+                return store_map
+        return TermsMap.search(domain_base + [('store_id', '=', False)], limit=1)
 
     # -------------------------------------------------------------------------
     # Partner
