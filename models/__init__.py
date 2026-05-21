@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from . import neto_store
+from . import neto_payment
 from . import neto_sync_log
 from . import neto_connector
 from . import neto_product

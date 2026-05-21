@@ -2,6 +2,8 @@ id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_neto_sync_log_user,neto.sync.log user,model_neto_sync_log,base.group_user,1,1,1,1
 access_neto_store_user,neto.store user,model_neto_store,base.group_user,1,0,0,0
 access_neto_store_manager,neto.store manager,model_neto_store,base.group_system,1,1,1,1
+access_neto_payment_user,neto.payment user,model_neto_payment,base.group_user,1,0,0,0
+access_neto_payment_manager,neto.payment manager,model_neto_payment,base.group_system,1,1,1,1
 access_neto_sync_wizard,neto.sync.wizard admin,model_neto_sync_wizard,base.group_system,1,1,1,1
 access_neto_shipping_audit_wizard,neto.shipping.audit.wizard admin,model_neto_shipping_audit_wizard,base.group_system,1,1,1,1
 access_neto_rma_log_user,neto.rma.log user,model_neto_rma_log,base.group_user,1,1,1,1
