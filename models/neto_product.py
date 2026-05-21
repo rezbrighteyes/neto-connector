@@ -294,6 +294,7 @@ class NetoConnector(models.AbstractModel):
             template.sudo().write({'product_tag_ids': [(4, tag.id)]})
 
     def _get_price_values(self, store, item):
+        rrp_incl = round(_to_float(item.get('RRP')), 4)
         rrp_ex = _to_ex_gst(item.get('RRP'), item)
         default_price_ex = _to_ex_gst(item.get('DefaultPrice'), item)
         cost_price = round(_to_float(item.get('CostPrice')), 4)
@@ -312,6 +313,7 @@ class NetoConnector(models.AbstractModel):
                 list_price = round(rrp_ex / 2.0, 4)
         return {
             'sale_price': list_price,
+            'rrp_incl': rrp_incl,
             'rrp_ex': rrp_ex,
             'cost_price': resolved_cost_price,
         }
@@ -490,7 +492,7 @@ class NetoConnector(models.AbstractModel):
         parent_sku = (item.get('ParentSKU') or '').strip()
         values = {
             'barcode': barcode or False,
-            'recommended_retail_price': price_values['rrp_ex'],
+            'recommended_retail_price': price_values['rrp_incl'],
             'standard_price': price_values['cost_price'],
             'neto_product_id': neto_product_id or False,
             'neto_store_id': store.id,
