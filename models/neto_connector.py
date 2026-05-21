@@ -336,13 +336,28 @@ class NetoConnector(models.AbstractModel):
         Returns (product, was_created).
         """
         Product = self.env['product.product'].sudo()
-
-        product = Product.search([('default_code', '=', sku)], limit=1)
-        if product:
-            return product, False
+        conflict_on_default_code = False
+        products = Product.search([('default_code', '=', sku)])
+        if hasattr(self, '_select_active_unique_match'):
+            product, conflict_on_default_code = self._select_active_unique_match(products)
+            if product:
+                return product, False
+        elif len(products) == 1:
+            return products, False
 
         item = self._fetch_neto_item(store, sku)
         if item:
+            if hasattr(self, '_match_existing_product'):
+                product, conflict = self._match_existing_product(store, item)
+                if product:
+                    return product, False
+                if conflict:
+                    _logger.warning(
+                        'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
+                        'skipping auto-create to avoid linking the wrong product',
+                        sku,
+                    )
+                    return None, False
             neto_barcode = (item.get('UPC') or item.get('UPC1') or '').strip()
             if neto_barcode:
                 product = Product.search([('barcode', '=', neto_barcode)], limit=1)
@@ -352,6 +367,14 @@ class NetoConnector(models.AbstractModel):
                         sku, product.name, neto_barcode,
                     )
                     return product, False
+
+        if conflict_on_default_code:
+            _logger.warning(
+                'Neto sync: SKU=%s matches multiple Odoo products by default_code and '
+                'could not be resolved — skipping auto-create',
+                sku,
+            )
+            return None, False
 
         if item and item.get('Name'):
             base_name = item['Name'].strip()
@@ -919,12 +942,9 @@ class NetoConnector(models.AbstractModel):
                 )
                 continue
 
-            product = Product.search([('default_code', '=', sku)], limit=1)
-            was_autocreated = False
-            if not product:
-                product, was_autocreated = self._get_or_create_product_from_neto(
-                    store, sku, line
-                )
+            product, was_autocreated = self._get_or_create_product_from_neto(
+                store, sku, line
+            )
 
             if not product:
                 _logger.warning(
