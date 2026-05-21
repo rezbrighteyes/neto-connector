@@ -14,6 +14,7 @@ class NetoStore(models.Model):
     last_sync_date = fields.Datetime(string='Last Sync', readonly=True)
     last_rma_sync_date = fields.Datetime(string='Last RMA Sync', readonly=True)
     last_product_sync_date = fields.Datetime(string='Last Product Sync', readonly=True)
+    last_payment_sync_date = fields.Datetime(string='Last Payment Sync', readonly=True)
     company_id = fields.Many2one(
         'res.company', string='Company', required=True,
         default=lambda self: self.env.company,

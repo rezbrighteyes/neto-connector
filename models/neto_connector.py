@@ -9,6 +9,7 @@ from odoo import models, fields
 _logger = logging.getLogger(__name__)
 
 _API_ACTION = 'GetOrder'
+_PAYMENT_API_ACTION = 'GetPayment'
 _GST_DIVISOR = 1.1  # Neto UnitPrice is GST-inclusive; divide to get ex-GST for Odoo
 _SURCHARGE_SKU = 'NETO-SURCHARGE'  # internal product SKU for surcharge lines
 _SHIPPING_SKU  = 'NETO_SHIPPING'   # internal product SKU for shipping lines
@@ -44,6 +45,20 @@ _INVOICE_CUTOFF_DAYS = 730
 
 # GetOrder page size — Neto returns max 50 per page
 _GET_ORDER_PAGE_SIZE = 50
+
+_GET_PAYMENT_PAGE_SIZE = 100
+
+GET_PAYMENT_OUTPUT_SELECTOR = [
+    'PaymentID',
+    'OrderID',
+    'AmountPaid',
+    'CurrencyCode',
+    'DatePaidUTC',
+    'PaymentMethod',
+    'PaymentMethodName',
+    'ProcessBy',
+    'PaymentNotes',
+]
 
 # GetItem OutputSelectors we need for product creation
 _GETITEM_OUTPUT = [
@@ -427,7 +442,13 @@ class NetoConnector(models.AbstractModel):
             vals['weight'] = weight
 
         try:
-            product = Product.create(vals)
+            product = Product.with_context(default_company_id=False).create(vals)
+            product.write({'company_id': False})
+            template = product.product_tmpl_id
+            if 'company_id' in template._fields:
+                template.write({'company_id': False})
+            if 'company_ids' in template._fields:
+                template.write({'company_ids': [(5, 0, 0)]})
             _logger.info(
                 'Neto sync: auto-created product "%s" (SKU=%s, price=%.4f, barcode=%s)',
                 product_name, sku, list_price, barcode or 'none',
@@ -532,6 +553,135 @@ class NetoConnector(models.AbstractModel):
         return all_orders
 
     # -------------------------------------------------------------------------
+    # Payment sync
+    # -------------------------------------------------------------------------
+
+    def _fetch_payments_page(self, store, date_paid_from, date_paid_to, page=1):
+        url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
+        headers = {
+            'Content-Type': 'application/json',
+            'NETOAPI_ACTION': _PAYMENT_API_ACTION,
+            'NETOAPI_KEY': store.api_key,
+            'Accept': 'application/json',
+        }
+        payload = {
+            'Filter': {
+                'DatePaidFrom': date_paid_from.strftime('%Y-%m-%dT%H:%M:%S'),
+                'DatePaidTo': date_paid_to.strftime('%Y-%m-%dT%H:%M:%S'),
+                'Page': page,
+                'Limit': _GET_PAYMENT_PAGE_SIZE,
+                'OutputSelector': GET_PAYMENT_OUTPUT_SELECTOR,
+            }
+        }
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        response.raise_for_status()
+        body = response.json()
+
+        if 'GetPaymentResponse' in body:
+            payments = body['GetPaymentResponse'].get('Payment', [])
+        else:
+            payments = body.get('Payment', [])
+        if isinstance(payments, dict):
+            payments = [payments]
+        payments = payments or []
+        _logger.info('Neto payment sync [%s]: page %d — %d payment(s)', store.name, page, len(payments))
+        return payments
+
+    def _find_payment_sale_order(self, store, neto_order_id):
+        if not neto_order_id:
+            return self.env['sale.order']
+        domain = [('neto_order_id', '=', neto_order_id)]
+        if store.company_id:
+            domain.append(('company_id', 'in', [store.company_id.id, False]))
+        return self.env['sale.order'].sudo().search(domain, limit=1)
+
+    def _prepare_payment_vals(self, store, payment_data):
+        neto_order_id = str(payment_data.get('OrderID') or '').strip()
+        sale_order = self._find_payment_sale_order(store, neto_order_id)
+        currency = (
+            self.env['res.currency'].sudo().search([('name', '=', 'AUD')], limit=1)
+            or store.company_id.currency_id
+        )
+        return {
+            'neto_payment_id': str(payment_data.get('PaymentID') or '').strip(),
+            'neto_order_id': neto_order_id or False,
+            'sale_order_id': sale_order.id or False,
+            'partner_id': sale_order.partner_id.id or False,
+            'store_id': store.id,
+            'company_id': store.company_id.id,
+            'amount_paid': float(payment_data.get('AmountPaid') or 0.0),
+            'currency_id': currency.id,
+            'currency_code': payment_data.get('CurrencyCode') or False,
+            'date_paid': self._parse_neto_datetime(payment_data.get('DatePaidUTC')),
+            'payment_method': payment_data.get('PaymentMethod') or False,
+            'payment_method_name': payment_data.get('PaymentMethodName') or False,
+            'process_by': payment_data.get('ProcessBy') or False,
+            'payment_notes': payment_data.get('PaymentNotes') or False,
+            'is_orphan_payment': not bool(sale_order),
+        }
+
+    def _upsert_payment(self, store, payment_data):
+        Payment = self.env['neto.payment'].sudo()
+        neto_payment_id = str(payment_data.get('PaymentID') or '').strip()
+        if not neto_payment_id:
+            _logger.warning('Neto payment sync [%s]: skipped payment without PaymentID', store.name)
+            return Payment
+
+        vals = self._prepare_payment_vals(store, payment_data)
+        existing = Payment.search([('neto_payment_id', '=', neto_payment_id)], limit=1)
+        if existing:
+            existing.write(vals)
+            return existing
+        return Payment.create(vals)
+
+    def _relink_orphan_payments(self, store=None):
+        domain = [('is_orphan_payment', '=', True), ('neto_order_id', '!=', False)]
+        if store:
+            domain.append(('store_id', '=', store.id))
+        linked = 0
+        for payment in self.env['neto.payment'].sudo().search(domain):
+            sale_order = self._find_payment_sale_order(payment.store_id, payment.neto_order_id)
+            if sale_order:
+                payment.write({
+                    'sale_order_id': sale_order.id,
+                    'partner_id': sale_order.partner_id.id,
+                    'is_orphan_payment': False,
+                })
+                linked += 1
+        _logger.info('Neto payment sync: relinked %d orphan payment(s)', linked)
+        return linked
+
+    def sync_payments(self, store, date_paid_from, date_paid_to):
+        processed = 0
+        page = 1
+        while True:
+            payments = self._fetch_payments_page(store, date_paid_from, date_paid_to, page=page)
+            if not payments:
+                break
+            for payment_data in payments:
+                self._upsert_payment(store, payment_data)
+                processed += 1
+            store.sudo().write({'last_payment_sync_date': fields.Datetime.now()})
+            self.env.cr.commit()
+            if len(payments) < _GET_PAYMENT_PAGE_SIZE:
+                break
+            page += 1
+        self._relink_orphan_payments(store)
+        self.env.cr.commit()
+        return processed
+
+    def run_payment_sync_january_2024(self, store_id=None):
+        domain = [('active', '=', True)]
+        if store_id:
+            domain.append(('id', '=', store_id))
+        date_paid_from = datetime(2024, 1, 1, 0, 0, 0)
+        date_paid_to = datetime(2024, 1, 31, 23, 59, 59)
+        total = 0
+        for store in self.env['neto.store'].sudo().search(domain):
+            total += self.sync_payments(store, date_paid_from, date_paid_to)
+        return total
+
+    # -------------------------------------------------------------------------
     # Customer sync
     # -------------------------------------------------------------------------
 
@@ -613,14 +763,12 @@ class NetoConnector(models.AbstractModel):
 
         invoice_terms = (customer.get('DefaultInvoiceTerms') or '').strip()
         if invoice_terms:
-            term = self.env['account.payment.term'].sudo().search(
-                [('name', 'ilike', invoice_terms)], limit=1
-            )
-            if term:
-                vals['property_payment_term_id'] = term.id
+            terms_map = self._find_invoice_terms_map(store, invoice_terms)
+            if terms_map:
+                vals['property_payment_term_id'] = terms_map.payment_term_id.id
             else:
                 _logger.warning(
-                    'Neto sync: payment term "%s" not found for username %s — leaving unchanged',
+                    'Neto sync: payment term map "%s" not found for username %s — leaving unchanged',
                     invoice_terms, username,
                 )
 
@@ -655,6 +803,21 @@ class NetoConnector(models.AbstractModel):
                 username, exc,
             )
 
+    def _find_invoice_terms_map(self, store, invoice_terms):
+        normalized_terms = (invoice_terms or '').strip()
+        if not normalized_terms:
+            return self.env['neto.invoice.terms.map']
+        TermsMap = self.env['neto.invoice.terms.map'].sudo()
+        domain_base = [
+            ('active', '=', True),
+            ('neto_invoice_terms', '=ilike', normalized_terms),
+        ]
+        if store:
+            store_map = TermsMap.search(domain_base + [('store_id', '=', store.id)], limit=1)
+            if store_map:
+                return store_map
+        return TermsMap.search(domain_base + [('store_id', '=', False)], limit=1)
+
     # -------------------------------------------------------------------------
     # Partner
     # -------------------------------------------------------------------------
@@ -685,7 +848,7 @@ class NetoConnector(models.AbstractModel):
             if existing:
                 existing.sudo().write({"neto_username": username, "ref": username})
                 _logger.info(
-                    "Neto sync: linked existing partner \%s\ to username %s",
+                    "Neto sync: linked existing partner %s to username %s",
                     display_name_check, username,
                 )
                 self._sync_customer(store, existing, username)
