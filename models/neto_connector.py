@@ -1522,9 +1522,26 @@ class NetoConnector(models.AbstractModel):
     # Per-store sync
     # -------------------------------------------------------------------------
 
+    def _disable_unsafe_temp_history_cron(self):
+        cron_id = self.env.context.get('cron_id')
+        if not cron_id:
+            return False
+        cron = self.env['ir.cron'].sudo().browse(cron_id).exists()
+        if not cron or cron.name != 'TEMP Liaise Neto History Sync 2024':
+            return False
+        cron.write({'active': False})
+        _logger.warning(
+            'Neto sync: disabled unsafe temp history cron "%s"; '
+            'use the reviewed chunked history process instead.',
+            cron.name,
+        )
+        return True
+
     def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None, import_as_history=False):
         # Suppress all email notifications during sync
         self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
+        if self._disable_unsafe_temp_history_cron():
+            return
         if not store.api_key or not store.store_url:
             _logger.warning(
                 'Neto connector: store "%s" missing api_key or store_url — skipping.',
