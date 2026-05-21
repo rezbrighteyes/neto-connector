@@ -567,7 +567,9 @@ class NetoConnector(models.AbstractModel):
             template.sudo().with_company(store.company_id).write({
                 'standard_price': price_values['cost_price'],
             })
-        pricelist = imported_price_map.pricelist_id or store.pricelist_id
+        pricelist = (
+            imported_price_map.pricelist_id if imported_price_map else store.pricelist_id
+        )
         template_values = {
             'categ_id': category.id,
             'active': True,
