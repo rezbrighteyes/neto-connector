@@ -34,6 +34,12 @@
               action="neto_product_sync_log_action"
               sequence="12"/>
 
+    <menuitem id="menu_neto_price_maps"
+              name="Price Maps"
+              parent="menu_neto_sync_root"
+              action="neto_price_map_action"
+              sequence="13"/>
+
     <!-- Run Sync Now: opens date-range wizard -->
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"

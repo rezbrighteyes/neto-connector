@@ -76,6 +76,13 @@ def _get_sku_variants(value):
     return variants
 
 
+def _normalize_identifier(value):
+    value = (value or '').strip()
+    if not value:
+        return ''
+    return _strip_leading_zeroes(value)
+
+
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
@@ -231,6 +238,19 @@ class NetoConnector(models.AbstractModel):
                     return None
         return None
 
+    def _get_inventory_candidates(self, item):
+        candidates = []
+        for key in ('InventoryID', 'UPC', 'UPC1', 'SKU', 'ParentSKU'):
+            raw = (item.get(key) or '').strip()
+            if not raw:
+                continue
+            if raw not in candidates:
+                candidates.append(raw)
+            normalized = _normalize_identifier(raw)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        return candidates
+
     def _is_liaise_store(self, store):
         values = [
             (store.name or '').strip().lower(),
@@ -293,7 +313,31 @@ class NetoConnector(models.AbstractModel):
         if tag.id not in template.product_tag_ids.ids:
             template.sudo().write({'product_tag_ids': [(4, tag.id)]})
 
-    def _get_price_values(self, store, item):
+    def _get_imported_price_map(self, store, item):
+        PriceMap = self.env['neto.price.map'].sudo()
+        candidates = self._get_inventory_candidates(item)
+        if not candidates:
+            return False
+        maps = PriceMap.search([
+            ('active', '=', True),
+            ('inventory_id', 'in', candidates),
+            '|',
+            ('store_id', '=', store.id),
+            ('store_id', '=', False),
+        ])
+        if not maps:
+            return False
+        candidate_order = {value: index for index, value in enumerate(candidates)}
+        maps = maps.sorted(
+            key=lambda record: (
+                0 if record.store_id.id == store.id else 1,
+                candidate_order.get(record.inventory_id or '', 9999),
+                record.id,
+            )
+        )
+        return maps[:1]
+
+    def _get_price_values(self, store, item, imported_price_map=False):
         rrp_incl = round(_to_float(item.get('RRP')), 4)
         rrp_ex = _to_ex_gst(item.get('RRP'), item)
         default_price_ex = _to_ex_gst(item.get('DefaultPrice'), item)
@@ -311,6 +355,11 @@ class NetoConnector(models.AbstractModel):
                 list_price = brighteyes_ex
             else:
                 list_price = round(rrp_ex / 2.0, 4)
+        if imported_price_map:
+            if imported_price_map.unit_price > 0:
+                list_price = imported_price_map.unit_price
+            if imported_price_map.rrp > 0:
+                rrp_incl = imported_price_map.rrp
         return {
             'sale_price': list_price,
             'rrp_incl': rrp_incl,
@@ -380,8 +429,7 @@ class NetoConnector(models.AbstractModel):
                 return matched, conflict
         return False, False
 
-    def _sync_pricelist_price(self, store, product, sale_price):
-        pricelist = store.pricelist_id
+    def _sync_pricelist_price(self, pricelist, product, sale_price):
         if not pricelist:
             return
         PricelistItem = self.env['product.pricelist.item'].sudo()
@@ -512,17 +560,19 @@ class NetoConnector(models.AbstractModel):
         return isinstance(exc, ValidationError) and 'Barcode(s) already assigned' in str(exc)
 
     def _write_product_record(self, product, template, store, item, category, action, reason=False):
-        price_values = self._get_price_values(store, item)
+        imported_price_map = self._get_imported_price_map(store, item)
+        price_values = self._get_price_values(store, item, imported_price_map=imported_price_map)
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
         if price_values['cost_price'] > 0:
             template.sudo().with_company(store.company_id).write({
                 'standard_price': price_values['cost_price'],
             })
+        pricelist = imported_price_map.pricelist_id or store.pricelist_id
         template_values = {
             'categ_id': category.id,
             'active': True,
         }
-        if not store.pricelist_id:
+        if not pricelist:
             template_values['list_price'] = price_values['sale_price']
         if not is_variant:
             template_values['name'] = (item.get('Name') or item.get('SKU') or template.name).strip()
@@ -541,7 +591,7 @@ class NetoConnector(models.AbstractModel):
             product_values['neto_product_sync_note'] = retry_reason
             product.sudo().write(product_values)
             self._log_product_sync(store, item, 'skipped', product=product, reason=retry_reason)
-        self._sync_pricelist_price(store, product, price_values['sale_price'])
+        self._sync_pricelist_price(pricelist, product, price_values['sale_price'])
         if self._is_global_store(store):
             self._set_pricing_review_tag(template)
 

@@ -3,6 +3,7 @@ from . import neto_store
 from . import neto_sync_log
 from . import neto_connector
 from . import neto_product
+from . import neto_price_map
 from . import neto_sync_wizard
 from . import neto_shipping_audit_wizard
 from . import res_partner

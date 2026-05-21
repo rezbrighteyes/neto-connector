@@ -28,6 +28,11 @@ class NetoStore(models.Model):
         domain="[('company_id', 'in', [company_id, False])]",
         help='Optional company/store sales pricelist updated by the Neto product sync.',
     )
+    price_map_ids = fields.One2many(
+        'neto.price.map',
+        'store_id',
+        string='Imported Price Maps',
+    )
     neto_default_categ_id = fields.Many2one(
         'product.category',
         string='Default Product Category',

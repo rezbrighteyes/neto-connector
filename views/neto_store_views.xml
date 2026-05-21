@@ -41,6 +41,23 @@
                             <field name="last_product_sync_date"/>
                         </group>
                     </group>
+                    <notebook>
+                        <page string="Imported Price Maps">
+                            <field name="price_map_ids" context="{'default_store_id': id}">
+                                <list editable="bottom">
+                                    <field name="active"/>
+                                    <field name="inventory_id"/>
+                                    <field name="range_name"/>
+                                    <field name="description"/>
+                                    <field name="unit_price"/>
+                                    <field name="rrp"/>
+                                    <field name="pricelist_id"/>
+                                    <field name="file" optional="hide"/>
+                                    <field name="sheet" optional="hide"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
                 </sheet>
             </form>
         </field>
