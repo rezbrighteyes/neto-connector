@@ -6,6 +6,13 @@ class NetoPayment(models.Model):
     _name = 'neto.payment'
     _description = 'Neto Payment'
     _order = 'date_paid desc, neto_payment_id desc'
+    _sql_constraints = [
+        (
+            'neto_payment_id_uniq',
+            'unique(neto_payment_id)',
+            'This Neto payment has already been synced.',
+        ),
+    ]
 
     neto_payment_id = fields.Char(string='Neto Payment ID', required=True, index=True, copy=False)
     neto_order_id = fields.Char(string='Neto Order ID', index=True, copy=False)
