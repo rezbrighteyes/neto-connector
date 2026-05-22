@@ -59,12 +59,26 @@
               groups="base.group_system"
               sequence="18"/>
 
+    <menuitem id="menu_neto_queue_history_import"
+              name="Queue History Import"
+              parent="menu_neto_sync_root"
+              action="neto_sync_wizard_action_history_queue"
+              groups="base.group_system"
+              sequence="19"/>
+
     <!-- Run Sync Now: opens date-range wizard -->
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"
               parent="menu_neto_sync_root"
               action="neto_sync_wizard_action"
               sequence="20"/>
+
+    <menuitem id="menu_neto_history_import_jobs"
+              name="History Import Jobs"
+              parent="menu_neto_sync_root"
+              action="neto_history_import_job_action"
+              groups="base.group_system"
+              sequence="21"/>
 
     <!-- Sync Single Order: opens single-order wizard (admin only) -->
     <menuitem id="menu_neto_sync_single_order"

@@ -2,6 +2,7 @@
 from . import neto_store
 from . import neto_payment
 from . import neto_invoice_terms_map
+from . import neto_history_import_job
 from . import neto_sync_log
 from . import neto_connector
 from . import neto_product

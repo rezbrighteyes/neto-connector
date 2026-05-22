@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
 from .neto_connector import GET_ORDER_OUTPUT_SELECTOR
@@ -46,6 +46,13 @@ class NetoSyncWizard(models.TransientModel):
         help='Sync orders updated up to this date/time (UTC). Leave blank to sync up to now.',
     )
     result_message = fields.Text(string='Result', readonly=True)
+    queue_orders = fields.Boolean(string='Import Orders', default=True)
+    queue_payments = fields.Boolean(string='Import Payments', default=True)
+    chunk_days = fields.Integer(
+        string='Days Per Background Chunk',
+        default=7,
+        help='Creates one background job per chunk so large history imports do not depend on the browser staying open.',
+    )
 
     @api.onchange('order_id_input')
     def _onchange_order_id_input(self):
@@ -64,6 +71,45 @@ class NetoSyncWizard(models.TransientModel):
             return self._sync_date_range(store, self.date_from, self.date_to)
         else:
             raise UserError(_('Please enter a Neto Order ID or set a Date From for date range sync.'))
+
+    def action_queue_history_import(self):
+        self.ensure_one()
+        if not self.date_from or not self.date_to:
+            raise UserError(_('Set both Date From and Date To before queueing a history import.'))
+        if self.date_to <= self.date_from:
+            raise UserError(_('Date To must be after Date From.'))
+        if not self.queue_orders and not self.queue_payments:
+            raise UserError(_('Select at least one import type: orders or payments.'))
+
+        chunk_days = max(self.chunk_days or 1, 1)
+        Job = self.env['neto.history.import.job'].sudo()
+        created = Job
+        chunk_start = self.date_from
+        while chunk_start < self.date_to:
+            chunk_end = min(chunk_start + timedelta(days=chunk_days), self.date_to)
+            created |= Job.create({
+                'name': '%s %s -> %s' % (
+                    self.store_id.name,
+                    chunk_start.strftime('%Y-%m-%d'),
+                    chunk_end.strftime('%Y-%m-%d'),
+                ),
+                'store_id': self.store_id.id,
+                'date_from': chunk_start,
+                'date_to': chunk_end,
+                'import_orders': self.queue_orders,
+                'import_payments': self.queue_payments,
+                'import_as_history': self.import_as_history,
+            })
+            chunk_start = chunk_end
+
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'neto.history.import.job',
+            'view_mode': 'list,form',
+            'domain': [('id', 'in', created.ids)],
+            'target': 'current',
+            'name': _('Queued Neto History Import Jobs'),
+        }
 
     def _fetch_raw_order(self, store, order_id):
         """Call Neto API for a single order by ID. Returns the raw order dict or raises UserError."""

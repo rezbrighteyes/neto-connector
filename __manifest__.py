@@ -26,6 +26,7 @@ single order by Neto Order ID via Neto Sync > Sync Single Order.
         'views/neto_store_views.xml',
         'views/neto_payment_views.xml',
         'views/neto_invoice_terms_map_views.xml',
+        'views/neto_history_import_job_views.xml',
         'views/neto_price_map_views.xml',
         'views/neto_product_sync_log_views.xml',
         'views/product_product_views.xml',
