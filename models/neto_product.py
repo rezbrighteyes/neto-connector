@@ -31,6 +31,9 @@ _PRODUCT_OUTPUT_SELECTOR = [
     'TaxInclusive',
     'IsActive',
     'IsVariant',
+    'WarehouseQuantity',
+    'AvailableSellQuantity',
+    'CommittedQuantity',
     'Categories',
     'ReferenceNumber',
     'PriceGroups',
@@ -116,6 +119,11 @@ class ProductProduct(models.Model):
         readonly=True,
     )
     neto_product_sync_note = fields.Char(string='Neto Product Sync Note', copy=False, readonly=True)
+    neto_available_sell_quantity = fields.Float(
+        string='Neto Available Sell Qty',
+        copy=False,
+        readonly=True,
+    )
 
 
 class NetoProductSyncLog(models.Model):
@@ -147,7 +155,7 @@ class NetoProductSyncLog(models.Model):
 class NetoConnector(models.AbstractModel):
     _inherit = 'neto.connector'
 
-    def _fetch_products_page(self, store, page=1, limit=_PRODUCT_PAGE_SIZE):
+    def _fetch_products_page(self, store, page=1, limit=_PRODUCT_PAGE_SIZE, active_filter='True'):
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -157,12 +165,13 @@ class NetoConnector(models.AbstractModel):
         }
         payload = {
             'Filter': {
-                'IsActive': 'True',
                 'Page': page,
                 'Limit': limit,
                 'OutputSelector': _PRODUCT_OUTPUT_SELECTOR,
             }
         }
+        if active_filter in ('True', 'False'):
+            payload['Filter']['IsActive'] = active_filter
         response = requests.post(url, json=payload, headers=headers, timeout=90)
         response.raise_for_status()
         body = response.json()
@@ -171,18 +180,26 @@ class NetoConnector(models.AbstractModel):
             items = [items]
         return items or []
 
-    def _fetch_all_active_products(self, store):
+    def _fetch_all_products(self, store, include_active=True, include_inactive=False):
         items = []
-        page = 1
-        while True:
-            chunk = self._fetch_products_page(store, page=page, limit=_PRODUCT_PAGE_SIZE)
-            if not chunk:
-                break
-            items.extend(chunk)
-            if len(chunk) < _PRODUCT_PAGE_SIZE:
-                break
-            page += 1
-        return [item for item in items if str(item.get('IsActive') or '').strip().lower() == 'true']
+        active_filters = []
+        if include_active:
+            active_filters.append('True')
+        if include_inactive:
+            active_filters.append('False')
+        for active_filter in active_filters:
+            page = 1
+            while True:
+                chunk = self._fetch_products_page(
+                    store, page=page, limit=_PRODUCT_PAGE_SIZE, active_filter=active_filter
+                )
+                if not chunk:
+                    break
+                items.extend(chunk)
+                if len(chunk) < _PRODUCT_PAGE_SIZE:
+                    break
+                page += 1
+        return items
 
     def _get_neto_categories(self, item):
         raw = item.get('Categories') or []
@@ -399,7 +416,7 @@ class NetoConnector(models.AbstractModel):
         return False, True
 
     def _match_existing_product(self, store, item):
-        Product = self.env['product.product'].sudo()
+        Product = self.env['product.product'].sudo().with_context(active_test=False)
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
         sku = (item.get('SKU') or '').strip()
         sku_variants = _get_sku_variants(sku)
@@ -568,7 +585,75 @@ class NetoConnector(models.AbstractModel):
     def _is_barcode_conflict(self, exc):
         return isinstance(exc, ValidationError) and 'Barcode(s) already assigned' in str(exc)
 
-    def _write_product_record(self, product, template, store, item, category, action, reason=False):
+    def _get_neto_available_sell_quantity(self, item):
+        for key in ('AvailableSellQuantity', 'QtyInStock', 'QuantityOnHand'):
+            if item.get(key) not in (None, ''):
+                return _to_float(item.get(key))
+
+        warehouse_quantity = item.get('WarehouseQuantity') or []
+        if isinstance(warehouse_quantity, dict):
+            warehouse_quantity = warehouse_quantity.get('Warehouse') or warehouse_quantity.get('WarehouseQuantity') or [warehouse_quantity]
+        if isinstance(warehouse_quantity, dict):
+            warehouse_quantity = [warehouse_quantity]
+        if not isinstance(warehouse_quantity, list):
+            return None
+
+        def _extract_quantity(record):
+            if not isinstance(record, dict):
+                return None
+            for key in ('Quantity', 'Qty', 'AvailableSellQuantity'):
+                if record.get(key) not in (None, ''):
+                    return _to_float(record.get(key))
+            nested = record.get('Warehouse') or record.get('WarehouseQuantity')
+            if isinstance(nested, dict):
+                return _extract_quantity(nested)
+            return None
+
+        total = 0.0
+        found = False
+        for warehouse in warehouse_quantity:
+            quantity = _extract_quantity(warehouse)
+            if quantity is None:
+                continue
+            total += quantity
+            found = True
+        return total if found else None
+
+    def _ensure_stockable_product(self, product):
+        template = product.product_tmpl_id
+        values = {}
+        if 'is_storable' in template._fields and not template.is_storable:
+            values['is_storable'] = True
+        elif 'type' in template._fields:
+            selection = template._fields['type'].selection
+            if isinstance(selection, list) and any(key == 'product' for key, label in selection):
+                if template.type != 'product':
+                    values['type'] = 'product'
+        if values:
+            template.sudo().write(values)
+
+    def _sync_stock_quantity(self, store, product, item):
+        qty = self._get_neto_available_sell_quantity(item)
+        if qty is None:
+            return False
+        location = store.warehouse_id.lot_stock_id
+        if not location:
+            self._log_product_sync(store, item, 'skipped', product=product, reason='Store warehouse has no stock location')
+            return False
+        self._ensure_stockable_product(product)
+        product = product.with_company(store.company_id)
+        current_qty = product.with_context(location=location.id).qty_available
+        delta = round(qty - current_qty, 4)
+        if delta:
+            self.env['stock.quant'].sudo().with_company(store.company_id)._update_available_quantity(
+                product, location, delta
+            )
+        product.sudo().write({'neto_available_sell_quantity': qty})
+        return True
+
+    def _write_product_record(
+        self, product, template, store, item, category, action, reason=False, sync_stock=True
+    ):
         imported_price_map = self._get_imported_price_map(store, item)
         price_values = self._get_price_values(store, item, imported_price_map=imported_price_map)
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
@@ -581,7 +666,7 @@ class NetoConnector(models.AbstractModel):
         )
         template_values = {
             'categ_id': category.id,
-            'active': True,
+            'active': str(item.get('IsActive') or '').strip().lower() != 'false',
         }
         if not pricelist:
             template_values['list_price'] = price_values['sale_price']
@@ -603,6 +688,8 @@ class NetoConnector(models.AbstractModel):
             product.sudo().write(product_values)
             self._log_product_sync(store, item, 'skipped', product=product, reason=retry_reason)
         self._sync_pricelist_price(pricelist, product, price_values['sale_price'])
+        if sync_stock:
+            self._sync_stock_quantity(store, product, item)
         if self._is_global_store(store):
             self._set_pricing_review_tag(template)
 
@@ -617,7 +704,7 @@ class NetoConnector(models.AbstractModel):
         }
         self.env['neto.product.sync.log'].sudo().create(values)
 
-    def _process_product_item(self, store, item, matched_ids):
+    def _process_product_item(self, store, item, matched_ids, sync_stock=True):
         product, conflict = self._match_existing_product(store, item)
         if conflict:
             self._log_product_sync(store, item, 'conflict', reason='Ambiguous existing Odoo match')
@@ -625,7 +712,9 @@ class NetoConnector(models.AbstractModel):
         category = self._get_or_create_category(store, item)
         if product:
             template = product.product_tmpl_id
-            self._write_product_record(product, template, store, item, category, 'updated')
+            self._write_product_record(
+                product, template, store, item, category, 'updated', sync_stock=sync_stock
+            )
             matched_ids.add(product.id)
             self._log_product_sync(store, item, 'updated', product=product)
             return product
@@ -633,7 +722,9 @@ class NetoConnector(models.AbstractModel):
         if not product:
             self._log_product_sync(store, item, 'error', reason='Unable to create Odoo product')
             return False
-        self._write_product_record(product, template, store, item, category, 'created')
+        self._write_product_record(
+            product, template, store, item, category, 'created', sync_stock=sync_stock
+        )
         matched_ids.add(product.id)
         self._log_product_sync(store, item, 'created', product=product)
         return product
@@ -718,21 +809,28 @@ class NetoConnector(models.AbstractModel):
                 'neto_product_sync_note': reason,
             })
 
-    def _sync_product_store(self, store):
+    def _sync_product_store(self, store, include_active=True, include_inactive=False, sync_stock=True):
         if not store.api_key or not store.store_url:
             _logger.warning(
                 'Neto product sync: store "%s" missing api_key or store_url — skipping.',
                 store.name,
             )
             return set(), {}
-        _logger.info('Neto product sync [%s]: fetching active products', store.name)
-        items = self._fetch_all_active_products(store)
+        _logger.info(
+            'Neto product sync [%s]: fetching products active=%s inactive=%s',
+            store.name, include_active, include_inactive,
+        )
+        items = self._fetch_all_products(
+            store, include_active=include_active, include_inactive=include_inactive
+        )
         standalones, variants = self._split_products(items)
         matched_ids = set()
         write_counter = 0
         for item in standalones + variants:
             try:
-                product = self._process_product_item(store, item, matched_ids)
+                product = self._process_product_item(
+                    store, item, matched_ids, sync_stock=sync_stock
+                )
                 if product:
                     write_counter += 1
                     if write_counter % _PRODUCT_WRITE_BATCH_SIZE == 0:
@@ -746,12 +844,14 @@ class NetoConnector(models.AbstractModel):
                 self.env.cr.commit()
         store.sudo().write({'last_product_sync_date': fields.Datetime.now()})
         _logger.info(
-            'Neto product sync [%s]: completed — %d active item(s), %d matched/created.',
+            'Neto product sync [%s]: completed — %d item(s), %d matched/created.',
             store.name, len(items), len(matched_ids),
         )
         return matched_ids, self._collect_active_signatures(items)
 
-    def run_product_sync(self, store_ids=None):
+    def run_product_sync(
+        self, store_ids=None, include_active=True, include_inactive=False, sync_stock=True
+    ):
         domain = [('active', '=', True)]
         if store_ids:
             domain.append(('id', 'in', store_ids))
@@ -763,7 +863,12 @@ class NetoConnector(models.AbstractModel):
         signatures_by_store = {}
         for store in stores:
             try:
-                matched_ids, signatures = self._sync_product_store(store)
+                matched_ids, signatures = self._sync_product_store(
+                    store,
+                    include_active=include_active,
+                    include_inactive=include_inactive,
+                    sync_stock=sync_stock,
+                )
                 all_matched_ids.update(matched_ids)
                 signatures_by_store[store.id] = signatures
             except Exception as exc:
@@ -771,4 +876,5 @@ class NetoConnector(models.AbstractModel):
                     'Neto product sync: store "%s" failed — %s',
                     store.name, exc,
                 )
-        self._log_unmatched_products(stores, all_matched_ids, signatures_by_store)
+        if include_active:
+            self._log_unmatched_products(stores, all_matched_ids, signatures_by_store)

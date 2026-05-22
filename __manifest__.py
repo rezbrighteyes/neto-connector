@@ -19,7 +19,7 @@ Partners are matched by Neto Username or auto-created. A sync-log dashboard
 gives full visibility into every sync run. Admins can manually sync any
 single order by Neto Order ID via Neto Sync > Sync Single Order.
     """,
-    'depends': ['sale', 'mail', 'account'],
+    'depends': ['sale', 'mail', 'account', 'stock'],
     'data': [
         'security/ir.model.access.csv',
         'data/cron.xml',
@@ -28,6 +28,7 @@ single order by Neto Order ID via Neto Sync > Sync Single Order.
         'views/neto_invoice_terms_map_views.xml',
         'views/neto_history_import_job_views.xml',
         'views/neto_price_map_views.xml',
+        'views/neto_product_sync_wizard_views.xml',
         'views/neto_product_sync_log_views.xml',
         'views/product_product_views.xml',
         'views/product_template_views.xml',

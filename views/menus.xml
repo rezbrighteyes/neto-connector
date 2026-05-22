@@ -99,17 +99,24 @@
               sequence="30"/>
 
     <!-- Products & Pricing -->
+    <menuitem id="menu_neto_run_product_sync"
+              name="Run Product Sync"
+              parent="menu_neto_products"
+              action="neto_product_sync_wizard_action"
+              groups="base.group_system"
+              sequence="10"/>
+
     <menuitem id="menu_neto_product_sync_log"
               name="Product Sync Log"
               parent="menu_neto_products"
               action="neto_product_sync_log_action"
-              sequence="10"/>
+              sequence="20"/>
 
     <menuitem id="menu_neto_price_maps"
               name="Price Maps"
               parent="menu_neto_products"
               action="neto_price_map_action"
-              sequence="20"/>
+              sequence="30"/>
 
     <!-- Configuration -->
     <menuitem id="menu_neto_stores"

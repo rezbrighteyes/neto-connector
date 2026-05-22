@@ -6,6 +6,7 @@ from . import neto_history_import_job
 from . import neto_sync_log
 from . import neto_connector
 from . import neto_product
+from . import neto_product_sync_wizard
 from . import neto_price_map
 from . import neto_sync_wizard
 from . import neto_shipping_audit_wizard
