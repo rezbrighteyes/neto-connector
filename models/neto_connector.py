@@ -43,8 +43,8 @@ _DISPATCHED_STATUSES = frozenset({'Dispatched'})
 # Exception: orders with full payment recorded in Neto are always invoiced.
 _INVOICE_CUTOFF_DAYS = 730
 
-# GetOrder page size — Neto returns max 50 per page
-_GET_ORDER_PAGE_SIZE = 50
+# GetOrder page size — keep pages small so history jobs checkpoint often.
+_GET_ORDER_PAGE_SIZE = 25
 
 _GET_PAYMENT_PAGE_SIZE = 100
 

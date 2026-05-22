@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 import logging
-from datetime import timezone
+from datetime import timedelta, timezone
 
 from odoo import _, fields, models
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
+_STALE_RUNNING_MINUTES = 30
 
 
 class NetoHistoryImportJob(models.Model):
@@ -219,7 +221,30 @@ class NetoHistoryImportJob(models.Model):
             })
             self.env.cr.commit()
 
+    def _requeue_stale_running_jobs(self):
+        stale_before = fields.Datetime.now() - timedelta(minutes=_STALE_RUNNING_MINUTES)
+        stale_jobs = self.sudo().search([
+            ('state', '=', 'running'),
+            ('started_at', '!=', False),
+            ('started_at', '<', stale_before),
+        ])
+        if stale_jobs:
+            _logger.warning(
+                'Neto history import: requeueing %d stale running job(s)',
+                len(stale_jobs),
+            )
+            stale_jobs.write({
+                'state': 'pending',
+                'error_message': _(
+                    'Previous cron run stopped before this job completed. '
+                    'Requeued automatically.'
+                ),
+            })
+            self.env.cr.commit()
+        return len(stale_jobs)
+
     def cron_process_pending_history_import_jobs(self, limit=10):
+        self._requeue_stale_running_jobs()
         jobs = self.sudo().search([('state', '=', 'pending')], order='id', limit=limit)
         for job in jobs:
             job._process_job()
