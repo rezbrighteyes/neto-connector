@@ -12,6 +12,7 @@
                 <field name="store_url"/>
                 <field name="last_sync_date"/>
                 <field name="last_product_sync_date" optional="show"/>
+                <field name="last_payment_sync_date" optional="show"/>
                 <field name="active"/>
             </list>
         </field>
@@ -39,6 +40,7 @@
                         <group string="Sync Status">
                             <field name="last_sync_date"/>
                             <field name="last_product_sync_date"/>
+                            <field name="last_payment_sync_date"/>
                         </group>
                     </group>
                 </sheet>
