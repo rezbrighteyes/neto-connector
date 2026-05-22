@@ -30,6 +30,7 @@ class NetoHistoryImportJob(models.Model):
             ('pending', 'Pending'),
             ('running', 'Running'),
             ('done', 'Done'),
+            ('cancelled', 'Cancelled'),
             ('error', 'Error'),
         ],
         default='pending',
@@ -61,13 +62,53 @@ class NetoHistoryImportJob(models.Model):
             'error_message': False,
         })
 
+    def action_cancel(self):
+        jobs = self.filtered(lambda job: job.state in ('pending', 'running'))
+        jobs.write({
+            'state': 'cancelled',
+            'finished_at': fields.Datetime.now(),
+            'error_message': _('Stopped manually.'),
+        })
+        return True
+
+    def action_cancel_pending_queue(self):
+        jobs = self.sudo().search([('state', 'in', ('pending', 'running'))])
+        count = len(jobs)
+        jobs.action_cancel()
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Neto History Import'),
+                'message': _('%s queued/running job(s) were stopped.') % count,
+                'type': 'warning',
+                'sticky': False,
+            },
+        }
+
     def action_process_now(self):
         for job in self:
             job._process_job()
         return True
 
+    def _cancel_requested(self):
+        self.invalidate_recordset(['state'])
+        self.read(['state'])
+        return self.state == 'cancelled'
+
+    def _finish_cancelled(self):
+        self.write({
+            'state': 'cancelled',
+            'finished_at': fields.Datetime.now(),
+            'result_message': _('Stopped manually before the remaining queued work was processed.'),
+        })
+        self.env.cr.commit()
+
     def _process_job(self):
         self.ensure_one()
+        if self.state == 'cancelled':
+            return
+
         connector = self.env['neto.connector'].sudo()
         SaleOrder = self.env['sale.order'].sudo()
         Payment = self.env['neto.payment'].sudo()
@@ -95,8 +136,13 @@ class NetoHistoryImportJob(models.Model):
                     since_dt=date_from,
                     until_dt=date_to,
                     import_as_history=self.import_as_history,
+                    should_stop=self._cancel_requested,
                 )
                 self.store_id.sudo().write({'last_sync_date': previous_last_sync_date})
+
+            if self._cancel_requested():
+                self._finish_cancelled()
+                return
 
             payments_processed = 0
             if self.import_payments:
@@ -108,6 +154,10 @@ class NetoHistoryImportJob(models.Model):
                 self.store_id.sudo().write({
                     'last_payment_sync_date': previous_last_payment_sync_date,
                 })
+
+            if self._cancel_requested():
+                self._finish_cancelled()
+                return
 
             payments_relinked = connector._relink_orphan_payments(self.store_id)
 
@@ -152,7 +202,7 @@ class NetoHistoryImportJob(models.Model):
             })
             self.env.cr.commit()
 
-    def cron_process_pending_history_import_jobs(self, limit=1):
+    def cron_process_pending_history_import_jobs(self, limit=10):
         jobs = self.sudo().search([('state', '=', 'pending')], order='id', limit=limit)
         for job in jobs:
             job._process_job()

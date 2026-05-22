@@ -8,6 +8,7 @@
             <list string="Neto History Import Jobs"
                   decoration-success="state == 'done'"
                   decoration-warning="state == 'running'"
+                  decoration-muted="state == 'cancelled'"
                   decoration-danger="state == 'error'">
                 <field name="id"/>
                 <field name="name"/>
@@ -43,8 +44,13 @@
                             type="object"
                             class="btn-primary"
                             invisible="state != 'pending'"/>
+                    <button name="action_cancel"
+                            string="Stop"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="state not in ('pending', 'running')"/>
                     <field name="state" widget="statusbar"
-                           statusbar_visible="pending,running,done,error"/>
+                           statusbar_visible="pending,running,done,cancelled,error"/>
                 </header>
                 <sheet>
                     <group>
@@ -83,6 +89,13 @@
         <field name="name">History Import Jobs</field>
         <field name="res_model">neto.history.import.job</field>
         <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="neto_history_import_stop_queue_action" model="ir.actions.server">
+        <field name="name">Stop History Import Queue</field>
+        <field name="model_id" ref="model_neto_history_import_job"/>
+        <field name="state">code</field>
+        <field name="code">action = env['neto.history.import.job'].action_cancel_pending_queue()</field>
     </record>
 
 </odoo>

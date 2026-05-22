@@ -1606,7 +1606,15 @@ class NetoConnector(models.AbstractModel):
     # Per-store sync
     # -------------------------------------------------------------------------
 
-    def _sync_store(self, store, hours_back=None, since_dt=None, until_dt=None, import_as_history=False):
+    def _sync_store(
+        self,
+        store,
+        hours_back=None,
+        since_dt=None,
+        until_dt=None,
+        import_as_history=False,
+        should_stop=None,
+    ):
         # Suppress all email notifications during sync
         self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
         if not store.api_key or not store.store_url:
@@ -1638,6 +1646,12 @@ class NetoConnector(models.AbstractModel):
         page = 1
 
         while True:
+            if should_stop and should_stop():
+                _logger.info(
+                    'Neto sync [%s]: stopped before page %d by cancel request',
+                    store.name, page,
+                )
+                break
             try:
                 orders = self._fetch_orders_page(store, since_dt, page=page, until_dt=until_dt)
             except requests.exceptions.RequestException as exc:
@@ -1661,6 +1675,12 @@ class NetoConnector(models.AbstractModel):
                 store.name, len(orders), page,
             )
             for order_data in orders:
+                if should_stop and should_stop():
+                    _logger.info(
+                        'Neto sync [%s]: stopped during page %d by cancel request',
+                        store.name, page,
+                    )
+                    break
                 self._process_order(
                     order_data, store, synced_ids, synced_customers,
                     import_as_history=import_as_history,
@@ -1669,6 +1689,13 @@ class NetoConnector(models.AbstractModel):
 
             store.sudo().write({'last_sync_date': fields.Datetime.now()})
             self.env.cr.commit()
+
+            if should_stop and should_stop():
+                _logger.info(
+                    'Neto sync [%s]: stopped after page %d by cancel request',
+                    store.name, page,
+                )
+                break
 
             if len(orders) < _GET_ORDER_PAGE_SIZE:
                 break

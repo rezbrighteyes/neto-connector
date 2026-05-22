@@ -25,8 +25,8 @@
         <field name="name">Neto: Process Queued History Imports</field>
         <field name="model_id" ref="model_neto_history_import_job"/>
         <field name="state">code</field>
-        <field name="code">env['neto.history.import.job'].cron_process_pending_history_import_jobs()</field>
-        <field name="interval_number">5</field>
+        <field name="code">env['neto.history.import.job'].cron_process_pending_history_import_jobs(limit=10)</field>
+        <field name="interval_number">1</field>
         <field name="interval_type">minutes</field>
         <field name="active" eval="True"/>
     </record>
