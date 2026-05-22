@@ -68,4 +68,12 @@
         <field name="view_mode">list,form</field>
     </record>
 
+    <record id="neto_payment_relink_orphans_action" model="ir.actions.server">
+        <field name="name">Relink Orphan Payments</field>
+        <field name="model_id" ref="model_neto_payment"/>
+        <field name="state">code</field>
+        <field name="groups_id" eval="[(4, ref('base.group_system'))]"/>
+        <field name="code">action = env['neto.payment'].action_relink_orphan_payments()</field>
+    </record>
+
 </odoo>

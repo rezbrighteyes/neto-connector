@@ -60,6 +60,20 @@ class NetoPayment(models.Model):
             or self.env.company.currency_id
         )
 
+    @api.model
+    def action_relink_orphan_payments(self):
+        linked = self.env['neto.connector'].sudo()._relink_orphan_payments()
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Neto Payments',
+                'message': '%s orphan payment(s) relinked.' % linked,
+                'type': 'success',
+                'sticky': False,
+            },
+        }
+
     @api.depends('date_paid', 'sale_order_id.date_order')
     def _compute_payment_timing(self):
         for payment in self:

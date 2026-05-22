@@ -52,6 +52,13 @@
               action="neto_invoice_terms_map_action"
               sequence="16"/>
 
+    <menuitem id="menu_neto_relink_orphan_payments"
+              name="Relink Orphan Payments"
+              parent="menu_neto_sync_root"
+              action="neto_payment_relink_orphans_action"
+              groups="base.group_system"
+              sequence="18"/>
+
     <!-- Run Sync Now: opens date-range wizard -->
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"
