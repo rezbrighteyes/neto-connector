@@ -368,10 +368,9 @@ class NetoConnector(models.AbstractModel):
                 if conflict:
                     _logger.warning(
                         'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
-                        'skipping auto-create to avoid linking the wrong product',
+                        'creating [NETO-UNSYNCED] placeholder to preserve the order line',
                         sku,
                     )
-                    return None, False
             neto_barcode = (item.get('UPC') or item.get('UPC1') or '').strip()
             if neto_barcode:
                 product = Product.search([('barcode', '=', neto_barcode)], limit=1)
@@ -385,10 +384,9 @@ class NetoConnector(models.AbstractModel):
         if conflict_on_default_code:
             _logger.warning(
                 'Neto sync: SKU=%s matches multiple Odoo products by default_code and '
-                'could not be resolved — skipping auto-create',
+                'could not be resolved — creating [NETO-UNSYNCED] placeholder',
                 sku,
             )
-            return None, False
 
         if item and item.get('Name'):
             base_name = item['Name'].strip()
@@ -456,9 +454,30 @@ class NetoConnector(models.AbstractModel):
             return product, True
         except Exception as exc:
             _logger.warning(
-                'Neto sync: could not auto-create product SKU=%s — %s', sku, exc
+                'Neto sync: could not auto-create product SKU=%s with full Neto data — %s',
+                sku, exc,
             )
-            return None, False
+            fallback_vals = dict(vals)
+            fallback_vals.pop('barcode', None)
+            try:
+                product = Product.with_context(default_company_id=False).create(fallback_vals)
+                product.write({'company_id': False})
+                template = product.product_tmpl_id
+                if 'company_id' in template._fields:
+                    template.write({'company_id': False})
+                if 'company_ids' in template._fields:
+                    template.write({'company_ids': [(5, 0, 0)]})
+                _logger.info(
+                    'Neto sync: auto-created fallback product "%s" (SKU=%s)',
+                    product_name, sku,
+                )
+                return product, True
+            except Exception as fallback_exc:
+                _logger.warning(
+                    'Neto sync: fallback product create also failed for SKU=%s — %s',
+                    sku, fallback_exc,
+                )
+                return None, False
 
     # -------------------------------------------------------------------------
     # API — with pagination
@@ -551,6 +570,32 @@ class NetoConnector(models.AbstractModel):
             store.name, len(all_orders), page,
         )
         return all_orders
+
+    def _fetch_order_by_id(self, store, order_id):
+        url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
+        headers = {
+            'Content-Type': 'application/json',
+            'NETOAPI_ACTION': 'GetOrder',
+            'NETOAPI_KEY': store.api_key,
+            'Accept': 'application/json',
+        }
+        payload = {
+            'Filter': {
+                'OrderID': [order_id],
+                'OutputSelector': GET_ORDER_OUTPUT_SELECTOR,
+            }
+        }
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        response.raise_for_status()
+        body = response.json()
+        if 'GetOrderResponse' in body:
+            orders = body['GetOrderResponse'].get('Order', [])
+        else:
+            orders = body.get('Order', [])
+        if isinstance(orders, dict):
+            orders = [orders]
+        orders = orders or []
+        return orders[0] if orders else None
 
     # -------------------------------------------------------------------------
     # Payment sync
@@ -1035,9 +1080,7 @@ class NetoConnector(models.AbstractModel):
         return target_state
 
     def _create_sale_order(self, order_data, partner, store, neto_internal=False, import_as_history=False):
-        Order     = self.env['sale.order'].sudo()
-        OrderLine = self.env['sale.order.line'].sudo()
-        Product   = self.env['product.product'].sudo()
+        Order = self.env['sale.order'].sudo()
 
         order_id = order_data.get('OrderID', '')
 
@@ -1104,60 +1147,25 @@ class NetoConnector(models.AbstractModel):
                 )
                 continue
 
-            product, was_autocreated = self._get_or_create_product_from_neto(
-                store, sku, line
+            added_line, missing_line = self._add_neto_order_line(
+                order, store, order_data, line
             )
-
-            if not product:
+            if missing_line:
                 _logger.warning(
                     'Neto sync: SKU "%s" could not be found or created for order %s — skipping line',
                     sku, order_id,
                 )
-                missing_lines.append({
-                    'sku':   sku,
-                    'name':  line.get('ProductName') or '',
-                    'qty':   line.get('Quantity') or '',
-                    'price': f"{float(line.get('UnitPrice') or 0):.2f}",
-                })
+                missing_lines.append(missing_line)
                 continue
-
-            if was_autocreated:
-                autocreated_lines.append({
-                    'sku':   sku,
-                    'name':  product.name,
-                    'qty':   line.get('Quantity') or '',
-                    'price': f"{float(line.get('UnitPrice') or 0):.2f}",
-                })
-
-            neto_price_incl = float(line.get('UnitPrice') or 0)
-            neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
-            qty = float(line.get('Quantity') or 1)
-
-            percent_discount = float(line.get('PercentDiscount') or 0)
-            if not percent_discount:
-                product_discount_amt = float(line.get('ProductDiscount') or 0)
-                line_total_incl = neto_price_incl * qty
-                if product_discount_amt and line_total_incl:
-                    percent_discount = round(
-                        product_discount_amt / line_total_incl * 100, 4
-                    )
-
-            try:
-                OrderLine.create({
-                    'order_id':       order.id,
-                    'product_id':     product.id,
-                    'product_uom_qty': qty,
-                    'price_unit':     neto_price_excl,
-                    'discount':       percent_discount,
-                    'name':           product.name,
-                    'product_uom_id': product.uom_id.id,
-                })
-                line_prices[product.id] = (neto_price_excl, percent_discount)
-            except Exception as line_exc:
-                _logger.warning(
-                    'Neto sync: could not create line SKU=%s on order %s — %s',
-                    sku, order_id, line_exc,
-                )
+            if not added_line:
+                continue
+            if added_line.get('was_autocreated'):
+                autocreated_lines.append(added_line)
+            order_line = added_line['order_line']
+            line_prices[order_line.product_id.id] = (
+                order_line.price_unit,
+                order_line.discount,
+            )
 
         # --- Surcharge line ---
         surcharge_total = float(order_data.get('SurchargeTotal') or 0)
@@ -1341,6 +1349,138 @@ class NetoConnector(models.AbstractModel):
             order.sudo().message_post(body=Markup('').join(msg_parts))
 
         return order, missing_lines
+
+    def _line_sku_set(self, order):
+        return {
+            (line.product_id.default_code or '').strip()
+            for line in order.order_line
+            if line.product_id and line.product_id.default_code
+        }
+
+    def _add_neto_order_line(self, order, store, order_data, line, existing_skus=None):
+        sku = (line.get('SKU') or line.get('Sku') or '').strip()
+        if not sku or self._is_note_sku(sku) or self._is_internal_sku(sku):
+            return False, False
+        if existing_skus is not None and sku in existing_skus:
+            return False, False
+
+        product, was_autocreated = self._get_or_create_product_from_neto(store, sku, line)
+        if not product:
+            return False, {
+                'sku': sku,
+                'name': line.get('ProductName') or '',
+                'qty': line.get('Quantity') or '',
+                'price': f"{float(line.get('UnitPrice') or 0):.2f}",
+            }
+
+        neto_price_incl = float(line.get('UnitPrice') or 0)
+        neto_price_excl = round(neto_price_incl / _GST_DIVISOR, 4)
+        qty = float(line.get('Quantity') or 1)
+
+        percent_discount = float(line.get('PercentDiscount') or 0)
+        if not percent_discount:
+            product_discount_amt = float(line.get('ProductDiscount') or 0)
+            line_total_incl = neto_price_incl * qty
+            if product_discount_amt and line_total_incl:
+                percent_discount = round(product_discount_amt / line_total_incl * 100, 4)
+
+        try:
+            order_line = self.env['sale.order.line'].sudo().create({
+                'order_id': order.id,
+                'product_id': product.id,
+                'product_uom_qty': qty,
+                'price_unit': neto_price_excl,
+                'discount': percent_discount,
+                'name': product.name,
+                'product_uom_id': product.uom_id.id,
+            })
+        except Exception as line_exc:
+            _logger.warning(
+                'Neto sync: could not create line SKU=%s on order %s — %s',
+                sku, order.name, line_exc,
+            )
+            return False, {
+                'sku': sku,
+                'name': line.get('ProductName') or '',
+                'qty': line.get('Quantity') or '',
+                'price': f"{float(line.get('UnitPrice') or 0):.2f}",
+            }
+        if existing_skus is not None:
+            existing_skus.add(sku)
+        return {
+            'sku': sku,
+            'name': product.name,
+            'qty': line.get('Quantity') or '',
+            'price': f"{float(line.get('UnitPrice') or 0):.2f}",
+            'was_autocreated': was_autocreated,
+            'order_line': order_line,
+        }, False
+
+    def repair_missing_sku_lines(self, sync_logs=None, limit=50):
+        SyncLog = self.env['neto.sync.log'].sudo()
+        if sync_logs:
+            logs = sync_logs.sudo()
+        else:
+            logs = SyncLog.search([
+                ('missing_skus', '!=', False),
+                ('sale_order_id', '!=', False),
+            ], order='sync_date asc', limit=limit)
+
+        repaired_orders = 0
+        added_lines = 0
+        still_missing_orders = 0
+        for log in logs:
+            order = log.sale_order_id
+            store = log.store_id
+            if not order or not store:
+                continue
+            order_data = self._fetch_order_by_id(store, log.neto_order_id)
+            if not order_data:
+                continue
+            raw_lines = order_data.get('OrderLine', [])
+            if isinstance(raw_lines, dict):
+                raw_lines = [raw_lines]
+
+            wanted_skus = {
+                sku.strip()
+                for sku in (log.missing_skus or '').split(',')
+                if sku.strip()
+            }
+            existing_skus = self._line_sku_set(order)
+            still_missing = []
+            added = []
+            for line in raw_lines:
+                sku = (line.get('SKU') or line.get('Sku') or '').strip()
+                if sku not in wanted_skus:
+                    continue
+                added_line, missing_line = self._add_neto_order_line(
+                    order, store, order_data, line, existing_skus=existing_skus
+                )
+                if added_line:
+                    added.append(added_line)
+                    added_lines += 1
+                elif missing_line:
+                    still_missing.append(missing_line['sku'])
+
+            if added:
+                repaired_orders += 1
+                order.sudo().message_post(body=Markup(
+                    '<p>&#9989; <strong>Repaired Neto missing SKU lines:</strong> {skus}</p>'
+                ).format(skus=', '.join(a['sku'] for a in added)))
+            log.write({
+                'missing_skus': ', '.join(still_missing) if still_missing else False,
+                'line_count': len(order.order_line),
+            })
+            if still_missing:
+                still_missing_orders += 1
+            self.env.cr.commit()
+
+        return {
+            'logs_checked': len(logs),
+            'orders_repaired': repaired_orders,
+            'lines_added': added_lines,
+            'orders_still_missing': still_missing_orders,
+        }
 
     # -------------------------------------------------------------------------
     # Per-order processing

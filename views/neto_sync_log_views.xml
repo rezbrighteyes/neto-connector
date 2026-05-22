@@ -33,6 +33,14 @@
         <field name="model">neto.sync.log</field>
         <field name="arch" type="xml">
             <form string="Neto Sync Log">
+                <header>
+                    <button name="action_repair_missing_sku_lines"
+                            string="Repair Missing SKU Lines"
+                            type="object"
+                            class="btn-primary"
+                            groups="base.group_system"
+                            invisible="not missing_skus or not sale_order_id"/>
+                </header>
                 <sheet>
                     <group>
                         <group string="Order Info">
@@ -101,6 +109,23 @@
                 or enable the scheduled job.
             </p>
         </field>
+    </record>
+
+    <record id="neto_sync_log_repair_missing_skus_action" model="ir.actions.server">
+        <field name="name">Repair Missing SKU Lines</field>
+        <field name="model_id" ref="model_neto_sync_log"/>
+        <field name="state">code</field>
+        <field name="code">result = env['neto.connector'].repair_missing_sku_lines(limit=50)
+action = {
+    'type': 'ir.actions.client',
+    'tag': 'display_notification',
+    'params': {
+        'title': 'Neto Missing SKUs',
+        'message': '%s line(s) added across %s order(s).' % (result['lines_added'], result['orders_repaired']),
+        'type': 'success' if not result['orders_still_missing'] else 'warning',
+        'sticky': False,
+    },
+}</field>
     </record>
 
 </odoo>
