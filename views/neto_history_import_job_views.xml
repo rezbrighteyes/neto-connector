@@ -49,6 +49,12 @@
                             type="object"
                             class="btn-secondary"
                             invisible="state not in ('pending', 'running')"/>
+                    <button name="action_delete"
+                            string="Delete"
+                            type="object"
+                            class="btn-secondary"
+                            groups="base.group_system"
+                            invisible="state == 'running'"/>
                     <field name="state" widget="statusbar"
                            statusbar_visible="pending,running,done,cancelled,error"/>
                 </header>

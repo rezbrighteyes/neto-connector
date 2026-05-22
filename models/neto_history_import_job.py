@@ -3,6 +3,7 @@ import logging
 from datetime import timezone
 
 from odoo import _, fields, models
+from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
 
@@ -85,6 +86,22 @@ class NetoHistoryImportJob(models.Model):
                 'sticky': False,
             },
         }
+
+    def action_delete(self):
+        self.unlink()
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'neto.history.import.job',
+            'view_mode': 'list,form',
+            'target': 'current',
+            'name': _('History Import Jobs'),
+        }
+
+    def unlink(self):
+        running = self.filtered(lambda job: job.state == 'running')
+        if running:
+            raise UserError(_('Stop running history import jobs before deleting them.'))
+        return super().unlink()
 
     def action_process_now(self):
         for job in self:

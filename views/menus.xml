@@ -13,6 +13,7 @@
     <!-- Top-level menu -->
     <menuitem id="menu_neto_sync_root"
               name="Neto Sync"
+              action="neto_sync_log_action"
               sequence="100"/>
 
     <!-- Groups -->
@@ -44,35 +45,35 @@
               sequence="50"/>
 
     <!-- Daily Work -->
+    <menuitem id="menu_neto_sync_log"
+              name="Sync Log"
+              parent="menu_neto_operations"
+              action="neto_sync_log_action"
+              sequence="10"/>
+
+    <menuitem id="menu_neto_payments"
+              name="Payments"
+              parent="menu_neto_operations"
+              action="neto_payment_action"
+              sequence="20"/>
+
+    <menuitem id="menu_neto_rma_log"
+              name="RMA Log"
+              parent="menu_neto_operations"
+              action="Reza_neto_connector.neto_rma_log_action"
+              sequence="30"/>
+
     <menuitem id="menu_neto_run_sync"
               name="Run Sync Now"
               parent="menu_neto_operations"
               action="neto_sync_wizard_action"
-              sequence="10"/>
+              sequence="40"/>
 
     <menuitem id="menu_neto_sync_single_order"
               name="Sync Single Order"
               parent="menu_neto_operations"
               action="neto_sync_wizard_action_single"
               groups="base.group_system"
-              sequence="20"/>
-
-    <menuitem id="menu_neto_sync_log"
-              name="Sync Log"
-              parent="menu_neto_operations"
-              action="neto_sync_log_action"
-              sequence="30"/>
-
-    <menuitem id="menu_neto_payments"
-              name="Payments"
-              parent="menu_neto_operations"
-              action="neto_payment_action"
-              sequence="40"/>
-
-    <menuitem id="menu_neto_rma_log"
-              name="RMA Log"
-              parent="menu_neto_operations"
-              action="Reza_neto_connector.neto_rma_log_action"
               sequence="50"/>
 
     <!-- History Import -->
