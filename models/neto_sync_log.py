@@ -31,6 +31,7 @@ class NetoSyncLog(models.Model):
     partner_created = fields.Boolean(string='New Partner Created')
     sync_date = fields.Datetime(string='Sync Date', default=fields.Datetime.now, readonly=True)
     line_count = fields.Integer(string='Lines')
+    neto_total_lines_checked = fields.Boolean(string='Neto Total Lines Checked')
 
     def action_repair_missing_sku_lines(self):
         result = self.env['neto.connector'].sudo().repair_missing_sku_lines(self)
@@ -38,7 +39,7 @@ class NetoSyncLog(models.Model):
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
-                'title': 'Neto Missing SKUs',
+                'title': 'Neto Order Lines',
                 'message': (
                     '%(lines_added)s line(s) added across %(orders_repaired)s order(s). '
                     '%(orders_still_missing)s order(s) still have missing SKUs.'

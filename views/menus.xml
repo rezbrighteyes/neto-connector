@@ -131,7 +131,7 @@
               sequence="10"/>
 
     <menuitem id="menu_neto_repair_missing_skus"
-              name="Repair Missing SKU Lines"
+              name="Repair Order Lines &amp; Totals"
               parent="menu_neto_maintenance"
               action="neto_sync_log_repair_missing_skus_action"
               groups="base.group_system"

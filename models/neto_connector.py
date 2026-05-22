@@ -78,7 +78,7 @@ GET_ORDER_OUTPUT_SELECTOR = [
     'OrderID', 'Username', 'Email',
     'BillAddress',
     'ShipAddress',
-    'GrandTotal', 'SurchargeTotal', 'ShippingTotal',
+    'GrandTotal', 'SurchargeTotal', 'ShippingTotal', 'ShippingOption',
     'OrderStatus',
     'PaymentMethod',
     'OrderPayment',          # replaces GetPayment API call
@@ -146,16 +146,91 @@ class NetoConnector(models.AbstractModel):
         return product
 
     def _get_shipping_product(self):
-        """Return the NETO_SHIPPING service product (must already exist in Odoo)."""
+        """Return (or create) the shipping service product."""
         product = self.env['product.product'].sudo().search(
             [('default_code', '=', _SHIPPING_SKU)], limit=1
         )
         if not product:
-            _logger.warning(
-                'Neto sync: shipping product SKU=%s not found — shipping line skipped',
-                _SHIPPING_SKU,
-            )
+            product = self.env['product.product'].sudo().create({
+                'name': 'Neto Shipping',
+                'default_code': _SHIPPING_SKU,
+                'type': 'service',
+                'sale_ok': True,
+                'purchase_ok': False,
+                'invoice_policy': 'order',
+            })
+            _logger.info('Neto sync: created shipping product (SKU=%s)', _SHIPPING_SKU)
         return product
+
+    def _safe_float(self, value):
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _add_neto_total_line(self, order, product, amount_incl, name, existing_skus=None):
+        sku = (product.default_code or '').strip()
+        if amount_incl <= 0:
+            return False
+        if existing_skus is not None and sku in existing_skus:
+            return False
+
+        amount_excl = round(amount_incl / _GST_DIVISOR, 4)
+        try:
+            line = self.env['sale.order.line'].sudo().create({
+                'order_id':       order.id,
+                'product_id':     product.id,
+                'product_uom_qty': 1,
+                'price_unit':     amount_excl,
+                'name':           name,
+                'product_uom_id': product.uom_id.id,
+            })
+        except Exception as exc:
+            _logger.warning(
+                'Neto sync: could not create %s line on order %s — %s',
+                sku, order.neto_order_id or order.name, exc,
+            )
+            return False
+
+        if existing_skus is not None and sku:
+            existing_skus.add(sku)
+        _logger.info(
+            'Neto sync: added %s line $%.4f (ex-GST) on order %s',
+            sku, amount_excl, order.neto_order_id or order.name,
+        )
+        return line
+
+    def _add_neto_total_lines(self, order, order_data, existing_skus=None):
+        """Add Neto order-level surcharge and shipping lines, avoiding duplicates."""
+        added = []
+
+        surcharge_total = self._safe_float(order_data.get('SurchargeTotal'))
+        if surcharge_total > 0:
+            surcharge_product = self._get_surcharge_product()
+            surcharge_line = self._add_neto_total_line(
+                order,
+                surcharge_product,
+                surcharge_total,
+                'Neto Order Surcharge',
+                existing_skus=existing_skus,
+            )
+            if surcharge_line:
+                added.append(surcharge_line)
+
+        shipping_total = self._safe_float(order_data.get('ShippingTotal'))
+        if shipping_total > 0:
+            shipping_product = self._get_shipping_product()
+            shipping_line = self._add_neto_total_line(
+                order,
+                shipping_product,
+                shipping_total,
+                order_data.get('ShippingOption') or 'Shipping',
+                existing_skus=existing_skus,
+            )
+            if shipping_line:
+                added.append(shipping_line)
+
+        return added
 
     # -------------------------------------------------------------------------
     # Payment helpers — read from OrderPayment block in GetOrder response
@@ -1167,54 +1242,7 @@ class NetoConnector(models.AbstractModel):
                 order_line.discount,
             )
 
-        # --- Surcharge line ---
-        surcharge_total = float(order_data.get('SurchargeTotal') or 0)
-        if surcharge_total > 0:
-            surcharge_product = self._get_surcharge_product()
-            surcharge_excl = round(surcharge_total / _GST_DIVISOR, 4)
-            try:
-                OrderLine.create({
-                    'order_id':       order.id,
-                    'product_id':     surcharge_product.id,
-                    'product_uom_qty': 1,
-                    'price_unit':     surcharge_excl,
-                    'name':           'Neto Order Surcharge',
-                    'product_uom_id': surcharge_product.uom_id.id,
-                })
-                _logger.info(
-                    'Neto sync: added surcharge line $%.4f (ex-GST) on order %s',
-                    surcharge_excl, order_id,
-                )
-            except Exception as sc_exc:
-                _logger.warning(
-                    'Neto sync: could not create surcharge line on order %s — %s',
-                    order_id, sc_exc,
-                )
-
-        # --- Shipping line ---
-        shipping_total = float(order_data.get('ShippingTotal') or 0)
-        if shipping_total > 0:
-            shipping_product = self._get_shipping_product()
-            if shipping_product:
-                shipping_excl = round(shipping_total / _GST_DIVISOR, 4)
-                try:
-                    OrderLine.create({
-                        'order_id':       order.id,
-                        'product_id':     shipping_product.id,
-                        'product_uom_qty': 1,
-                        'price_unit':     shipping_excl,
-                        'name':           order_data.get('ShippingOption') or 'Shipping',
-                        'product_uom_id': shipping_product.uom_id.id,
-                    })
-                    _logger.info(
-                        'Neto sync: added shipping line $%.4f (ex-GST) on order %s',
-                        shipping_excl, order_id,
-                    )
-                except Exception as sh_exc:
-                    _logger.warning(
-                        'Neto sync: could not create shipping line on order %s — %s',
-                        order_id, sh_exc,
-                    )
+        self._add_neto_total_lines(order, order_data)
 
         # --- Set final order state ---
         final_state = self._set_order_state(
@@ -1422,8 +1450,11 @@ class NetoConnector(models.AbstractModel):
             logs = sync_logs.sudo()
         else:
             logs = SyncLog.search([
-                ('missing_skus', '!=', False),
+                '&',
                 ('sale_order_id', '!=', False),
+                '|',
+                ('missing_skus', '!=', False),
+                ('neto_total_lines_checked', '=', False),
             ], order='sync_date asc', limit=limit)
 
         repaired_orders = 0
@@ -1462,14 +1493,26 @@ class NetoConnector(models.AbstractModel):
                 elif missing_line:
                     still_missing.append(missing_line['sku'])
 
+            total_lines = self._add_neto_total_lines(
+                order, order_data, existing_skus=existing_skus
+            )
             if added:
                 repaired_orders += 1
+            if total_lines:
+                added_lines += len(total_lines)
+                if not added:
+                    repaired_orders += 1
+                added.extend({
+                    'sku': line.product_id.default_code or line.name,
+                } for line in total_lines)
+            if added:
                 order.sudo().message_post(body=Markup(
-                    '<p>&#9989; <strong>Repaired Neto missing SKU lines:</strong> {skus}</p>'
+                    '<p>&#9989; <strong>Repaired Neto order lines/totals:</strong> {skus}</p>'
                 ).format(skus=', '.join(a['sku'] for a in added)))
             log.write({
                 'missing_skus': ', '.join(still_missing) if still_missing else False,
                 'line_count': len(order.order_line),
+                'neto_total_lines_checked': True,
             })
             if still_missing:
                 still_missing_orders += 1
@@ -1551,6 +1594,7 @@ class NetoConnector(models.AbstractModel):
                 'partner_created': partner_created,
                 'line_count':      line_count,
                 'missing_skus':    missing_skus_text,
+                'neto_total_lines_checked': True,
                 'skip_reason':     reason,
             })
 
