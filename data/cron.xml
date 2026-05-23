@@ -8,7 +8,7 @@
         <field name="code">env['neto.connector'].run_sync()</field>
         <field name="interval_number">15</field>
         <field name="interval_type">minutes</field>
-        <field name="active" eval="False"/>
+        <field name="active" eval="True"/>
     </record>
 
     <record id="ir_cron_neto_product_sync" model="ir.cron">
