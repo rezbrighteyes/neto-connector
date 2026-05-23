@@ -862,6 +862,7 @@ class NetoConnector(models.AbstractModel):
         return matched_ids, self._collect_active_signatures(items)
 
     def _sync_product_stock_store(self, store):
+        self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
         if not store.api_key or not store.store_url:
             _logger.warning(
                 'Neto product stock sync: store "%s" missing api_key or store_url — skipping.',
@@ -874,20 +875,20 @@ class NetoConnector(models.AbstractModel):
         skipped = 0
         for item in items:
             try:
-                product, conflict = self._match_existing_product(store, item)
-                if conflict or not product:
-                    skipped += 1
-                    continue
-                if self._sync_stock_quantity(store, product, item):
-                    updated += 1
-                    if updated % _PRODUCT_WRITE_BATCH_SIZE == 0:
-                        self.env.cr.commit()
+                with self.env.cr.savepoint():
+                    product, conflict = self._match_existing_product(store, item)
+                    if conflict or not product:
+                        skipped += 1
+                        continue
+                    if self._sync_stock_quantity(store, product, item):
+                        updated += 1
+                        if updated % _PRODUCT_WRITE_BATCH_SIZE == 0:
+                            self.env.cr.commit()
             except Exception as exc:
                 _logger.exception(
                     'Neto product stock sync [%s]: failed on SKU %s — %s',
                     store.name, item.get('SKU'), exc,
                 )
-                self.env.cr.commit()
         self.env.cr.commit()
         _logger.info(
             'Neto product stock sync [%s]: completed — %d updated, %d skipped.',
