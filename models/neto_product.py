@@ -415,6 +415,17 @@ class NetoConnector(models.AbstractModel):
             return products, False
         return False, True
 
+    def _match_by_barcode_candidates(self, Product, barcode_candidates):
+        saw_conflict = False
+        for barcode in barcode_candidates:
+            products = Product.search([('barcode', '=', barcode)])
+            matched, conflict = self._select_barcode_match(products)
+            if matched:
+                return matched, False
+            if conflict:
+                saw_conflict = True
+        return False, saw_conflict
+
     def _match_existing_product(self, store, item):
         Product = self.env['product.product'].sudo().with_context(active_test=False)
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
@@ -428,14 +439,13 @@ class NetoConnector(models.AbstractModel):
             ], limit=1)
             if product:
                 return product, False
-        barcode_candidates = self._get_barcode_candidates(item)
-        if barcode_candidates:
-            products = Product.search([('barcode', 'in', barcode_candidates)])
-            matched, conflict = self._select_barcode_match(products)
+        for sku_variant in sku_variants:
+            products = Product.search([('default_code', '=', sku_variant)])
+            matched, conflict = self._select_active_unique_match(products)
             if matched:
                 return matched, False
             if conflict:
-                return False, True
+                saw_ambiguous_sku_match = True
         if 'x_studio_neto_reference' in Product._fields:
             for sku_variant in sku_variants:
                 products = Product.search([('x_studio_neto_reference', '=', sku_variant)])
@@ -444,13 +454,13 @@ class NetoConnector(models.AbstractModel):
                     return matched, False
                 if conflict:
                     saw_ambiguous_sku_match = True
-        for sku_variant in sku_variants:
-            products = Product.search([('default_code', '=', sku_variant)])
-            matched, conflict = self._select_active_unique_match(products)
+        barcode_candidates = self._get_barcode_candidates(item)
+        if barcode_candidates:
+            matched, conflict = self._match_by_barcode_candidates(Product, barcode_candidates)
             if matched:
                 return matched, False
             if conflict:
-                saw_ambiguous_sku_match = True
+                return False, True
         if saw_ambiguous_sku_match:
             return False, True
         return False, False
