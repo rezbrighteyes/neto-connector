@@ -398,10 +398,10 @@ class NetoConnector(models.AbstractModel):
         values = []
         for key in ('UPC', 'UPC1'):
             raw = (item.get(key) or '').strip()
-            if raw:
+            if raw and raw != '0':
                 values.append(raw)
                 normalized = _strip_leading_zeroes(raw)
-                if normalized and normalized not in values:
+                if normalized and normalized != '0' and normalized not in values:
                     values.append(normalized)
         return values
 
@@ -416,15 +416,17 @@ class NetoConnector(models.AbstractModel):
         return False, True
 
     def _match_by_barcode_candidates(self, Product, barcode_candidates):
-        saw_conflict = False
         for barcode in barcode_candidates:
             products = Product.search([('barcode', '=', barcode)])
             matched, conflict = self._select_barcode_match(products)
             if matched:
                 return matched, False
             if conflict:
-                saw_conflict = True
-        return False, saw_conflict
+                _logger.info(
+                    'Neto product sync: ignoring shared barcode %s matched to %d product(s)',
+                    barcode, len(products),
+                )
+        return False, False
 
     def _match_existing_product(self, store, item):
         Product = self.env['product.product'].sudo().with_context(active_test=False)
