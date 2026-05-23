@@ -62,31 +62,17 @@
         </field>
     </record>
 
-    <record id="neto_payment_view_search" model="ir.ui.view">
-        <field name="name">neto.payment.search</field>
-        <field name="model">neto.payment</field>
-        <field name="arch" type="xml">
-            <search string="Neto Payments">
-                <field name="neto_payment_id"/>
-                <field name="neto_order_id"/>
-                <field name="sale_order_id"/>
-                <field name="partner_id"/>
-                <field name="store_id"/>
-                <filter name="orphan" string="Orphan" domain="[('is_orphan_payment', '=', True)]"/>
-                <filter name="late" string="Late" domain="[('is_late', '=', True)]"/>
-                <group expand="0" string="Group By">
-                    <filter name="group_store" string="Store" context="{'group_by': 'store_id'}"/>
-                    <filter name="group_method" string="Payment Method" context="{'group_by': 'payment_method_name'}"/>
-                </group>
-            </search>
-        </field>
-    </record>
-
     <record id="neto_payment_action" model="ir.actions.act_window">
         <field name="name">Neto Payments</field>
         <field name="res_model">neto.payment</field>
         <field name="view_mode">list,form</field>
-        <field name="search_view_id" ref="neto_payment_view_search"/>
+    </record>
+
+    <record id="neto_payment_relink_orphans_action" model="ir.actions.server">
+        <field name="name">Relink Orphan Payments</field>
+        <field name="model_id" ref="model_neto_payment"/>
+        <field name="state">code</field>
+        <field name="code">action = env['neto.payment'].action_relink_orphan_payments()</field>
     </record>
 
 </odoo>

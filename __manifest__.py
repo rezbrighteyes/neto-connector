@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Neto Order Sync for Odoo',
-    'version': '19.0.1.5.2',
+    'version': '19.0.1.5.3',
     'author': 'Reza Shiraz',
     'license': 'OPL-1',
     'category': 'Sales/Sales',
@@ -19,14 +19,16 @@ Partners are matched by Neto Username or auto-created. A sync-log dashboard
 gives full visibility into every sync run. Admins can manually sync any
 single order by Neto Order ID via Neto Sync > Sync Single Order.
     """,
-    'depends': ['sale', 'mail', 'account'],
+    'depends': ['sale', 'mail', 'account', 'stock'],
     'data': [
         'security/ir.model.access.csv',
         'data/cron.xml',
         'views/neto_store_views.xml',
         'views/neto_payment_views.xml',
         'views/neto_invoice_terms_map_views.xml',
+        'views/neto_history_import_job_views.xml',
         'views/neto_price_map_views.xml',
+        'views/neto_product_sync_wizard_views.xml',
         'views/neto_product_sync_log_views.xml',
         'views/product_product_views.xml',
         'views/product_template_views.xml',

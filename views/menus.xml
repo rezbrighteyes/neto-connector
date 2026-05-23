@@ -13,72 +13,149 @@
     <!-- Top-level menu -->
     <menuitem id="menu_neto_sync_root"
               name="Neto Sync"
+              action="neto_sync_log_action"
               sequence="100"/>
 
-    <!-- Sub-menus -->
-    <menuitem id="menu_neto_stores"
-              name="Stores"
+    <!-- Groups -->
+    <menuitem id="menu_neto_operations"
+              name="Daily Work"
               parent="menu_neto_sync_root"
-              action="neto_store_action"
-              sequence="5"/>
+              sequence="10"/>
 
+    <menuitem id="menu_neto_history"
+              name="History Import"
+              parent="menu_neto_sync_root"
+              groups="base.group_system"
+              sequence="20"/>
+
+    <menuitem id="menu_neto_maintenance"
+              name="Repair &amp; Tools"
+              parent="menu_neto_sync_root"
+              sequence="30"/>
+
+    <menuitem id="menu_neto_products"
+              name="Products &amp; Pricing"
+              parent="menu_neto_sync_root"
+              sequence="40"/>
+
+    <menuitem id="menu_neto_admin"
+              name="Configuration"
+              parent="menu_neto_sync_root"
+              groups="base.group_system"
+              sequence="50"/>
+
+    <!-- Daily Work -->
     <menuitem id="menu_neto_sync_log"
               name="Sync Log"
-              parent="menu_neto_sync_root"
+              parent="menu_neto_operations"
               action="neto_sync_log_action"
+              sequence="10"/>
+
+    <menuitem id="menu_neto_payments"
+              name="Payments"
+              parent="menu_neto_operations"
+              action="neto_payment_action"
+              sequence="20"/>
+
+    <menuitem id="menu_neto_rma_log"
+              name="RMA Log"
+              parent="menu_neto_operations"
+              action="Reza_neto_connector.neto_rma_log_action"
+              sequence="30"/>
+
+    <menuitem id="menu_neto_run_sync"
+              name="Run Sync Now"
+              parent="menu_neto_operations"
+              action="neto_sync_wizard_action"
+              sequence="40"/>
+
+    <menuitem id="menu_neto_sync_single_order"
+              name="Sync Single Order"
+              parent="menu_neto_operations"
+              action="neto_sync_wizard_action_single"
+              groups="base.group_system"
+              sequence="50"/>
+
+    <!-- History Import -->
+    <menuitem id="menu_neto_queue_history_import"
+              name="Queue History Import"
+              parent="menu_neto_history"
+              action="neto_sync_wizard_action_history_queue"
+              groups="base.group_system"
+              sequence="10"/>
+
+    <menuitem id="menu_neto_history_import_jobs"
+              name="History Import Jobs"
+              parent="menu_neto_history"
+              action="neto_history_import_job_action"
+              groups="base.group_system"
+              sequence="20"/>
+
+    <menuitem id="menu_neto_stop_history_import"
+              name="Stop History Import Queue"
+              parent="menu_neto_history"
+              action="neto_history_import_stop_queue_action"
+              groups="base.group_system"
+              sequence="30"/>
+
+    <!-- Products & Pricing -->
+    <menuitem id="menu_neto_run_product_sync"
+              name="Run Product Sync"
+              parent="menu_neto_products"
+              action="neto_product_sync_wizard_action"
+              groups="base.group_system"
               sequence="10"/>
 
     <menuitem id="menu_neto_product_sync_log"
               name="Product Sync Log"
-              parent="menu_neto_sync_root"
+              parent="menu_neto_products"
               action="neto_product_sync_log_action"
-              sequence="12"/>
-
-    <menuitem id="menu_neto_payments"
-              name="Payments"
-              parent="menu_neto_sync_root"
-              action="neto_payment_action"
-              sequence="14"/>
+              sequence="20"/>
 
     <menuitem id="menu_neto_price_maps"
               name="Price Maps"
-              parent="menu_neto_sync_root"
+              parent="menu_neto_products"
               action="neto_price_map_action"
-              sequence="13"/>
+              sequence="30"/>
+
+    <!-- Configuration -->
+    <menuitem id="menu_neto_stores"
+              name="Stores"
+              parent="menu_neto_admin"
+              action="neto_store_action"
+              sequence="10"/>
 
     <menuitem id="menu_neto_invoice_terms_maps"
               name="Invoice Terms Maps"
-              parent="menu_neto_sync_root"
+              parent="menu_neto_admin"
               action="neto_invoice_terms_map_action"
-              sequence="16"/>
-
-    <!-- Run Sync Now: opens date-range wizard -->
-    <menuitem id="menu_neto_run_sync"
-              name="Run Sync Now"
-              parent="menu_neto_sync_root"
-              action="neto_sync_wizard_action"
               sequence="20"/>
-
-    <!-- Sync Single Order: opens single-order wizard (admin only) -->
-    <menuitem id="menu_neto_sync_single_order"
-              name="Sync Single Order"
-              parent="menu_neto_sync_root"
-              action="neto_sync_wizard_action_single"
-              groups="base.group_system"
-              sequence="25"/>
-
-    <menuitem id="menu_neto_shipping_audit"
-              name="Shipping Data Audit"
-              parent="menu_neto_sync_root"
-              action="neto_shipping_audit_wizard_action"
-              groups="base.group_system"
-              sequence="27"/>
 
     <menuitem id="menu_neto_settings"
               name="Settings"
-              parent="menu_neto_sync_root"
+              parent="menu_neto_admin"
               action="neto_settings_action"
               sequence="30"/>
 
-    <menuitem id="menu_neto_rma_log" name="RMA Log" parent="menu_neto_sync_root" action="Reza_neto_connector.neto_rma_log_action" sequence="15"/>
+    <!-- Repair & Tools -->
+    <menuitem id="menu_neto_repair_missing_skus"
+              name="Repair Order Lines &amp; Totals"
+              parent="menu_neto_maintenance"
+              action="neto_sync_log_repair_missing_skus_action"
+              groups="base.group_system"
+              sequence="10"/>
+
+    <menuitem id="menu_neto_relink_orphan_payments"
+              name="Relink Orphan Payments"
+              parent="menu_neto_maintenance"
+              action="neto_payment_relink_orphans_action"
+              groups="base.group_system"
+              sequence="20"/>
+
+    <menuitem id="menu_neto_shipping_audit"
+              name="Shipping Data Audit"
+              parent="menu_neto_maintenance"
+              action="neto_shipping_audit_wizard_action"
+              groups="base.group_system"
+              sequence="30"/>
 </odoo>

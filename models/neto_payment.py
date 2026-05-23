@@ -6,48 +6,21 @@ class NetoPayment(models.Model):
     _name = 'neto.payment'
     _description = 'Neto Payment'
     _order = 'date_paid desc, neto_payment_id desc'
+    _sql_constraints = [
+        (
+            'neto_payment_id_uniq',
+            'unique(neto_payment_id)',
+            'This Neto payment has already been synced.',
+        ),
+    ]
 
-    neto_payment_id = fields.Char(
-        string='Neto Payment ID',
-        required=True,
-        index=True,
-        copy=False,
-    )
-    neto_order_id = fields.Char(
-        string='Neto Order ID',
-        index=True,
-        copy=False,
-    )
-    sale_order_id = fields.Many2one(
-        'sale.order',
-        string='Sale Order',
-        index=True,
-        ondelete='set null',
-    )
-    partner_id = fields.Many2one(
-        'res.partner',
-        string='Customer',
-        index=True,
-        ondelete='set null',
-    )
-    store_id = fields.Many2one(
-        'neto.store',
-        string='Neto Store',
-        required=True,
-        index=True,
-        ondelete='restrict',
-    )
-    company_id = fields.Many2one(
-        'res.company',
-        string='Company',
-        required=True,
-        index=True,
-        ondelete='restrict',
-    )
-    amount_paid = fields.Monetary(
-        string='Amount Paid',
-        currency_field='currency_id',
-    )
+    neto_payment_id = fields.Char(string='Neto Payment ID', required=True, index=True, copy=False)
+    neto_order_id = fields.Char(string='Neto Order ID', index=True, copy=False)
+    sale_order_id = fields.Many2one('sale.order', string='Sale Order', index=True, ondelete='set null')
+    partner_id = fields.Many2one('res.partner', string='Customer', index=True, ondelete='set null')
+    store_id = fields.Many2one('neto.store', string='Neto Store', required=True, index=True, ondelete='restrict')
+    company_id = fields.Many2one('res.company', string='Company', required=True, index=True, ondelete='restrict')
+    amount_paid = fields.Monetary(string='Amount Paid', currency_field='currency_id')
     currency_id = fields.Many2one(
         'res.currency',
         string='Currency',
@@ -55,16 +28,8 @@ class NetoPayment(models.Model):
         default=lambda self: self._default_aud_currency(),
         ondelete='restrict',
     )
-    currency_code = fields.Char(
-        string='Neto Currency Code',
-        copy=False,
-        help='Raw Neto CurrencyCode value kept for audit traceability.',
-    )
-    date_paid = fields.Datetime(
-        string='Date Paid',
-        index=True,
-        copy=False,
-    )
+    currency_code = fields.Char(string='Neto Currency Code', copy=False)
+    date_paid = fields.Datetime(string='Date Paid', index=True, copy=False)
     payment_method = fields.Char(string='Payment Method', copy=False)
     payment_method_name = fields.Char(string='Payment Method Name', copy=False)
     process_by = fields.Char(string='Process By', copy=False)
@@ -86,7 +51,6 @@ class NetoPayment(models.Model):
         default=True,
         index=True,
         copy=False,
-        help='True until the payment is linked to a sale order.',
     )
 
     @api.model
@@ -95,6 +59,20 @@ class NetoPayment(models.Model):
             self.env['res.currency'].sudo().search([('name', '=', 'AUD')], limit=1)
             or self.env.company.currency_id
         )
+
+    @api.model
+    def action_relink_orphan_payments(self):
+        linked = self.env['neto.connector'].sudo()._relink_orphan_payments()
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Neto Payments',
+                'message': '%s orphan payment(s) relinked.' % linked,
+                'type': 'success',
+                'sticky': False,
+            },
+        }
 
     @api.depends('date_paid', 'sale_order_id.date_order')
     def _compute_payment_timing(self):

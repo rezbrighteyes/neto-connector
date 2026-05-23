@@ -24,6 +24,7 @@
                 <field name="sale_order_id"/>
                 <field name="partner_id"/>
                 <field name="line_count"/>
+                <field name="neto_total_lines_checked" optional="hide"/>
             </list>
         </field>
     </record>
@@ -33,6 +34,14 @@
         <field name="model">neto.sync.log</field>
         <field name="arch" type="xml">
             <form string="Neto Sync Log">
+                <header>
+                    <button name="action_repair_missing_sku_lines"
+                            string="Repair Lines &amp; Totals"
+                            type="object"
+                            class="btn-primary"
+                            groups="base.group_system"
+                            invisible="not sale_order_id"/>
+                </header>
                 <sheet>
                     <group>
                         <group string="Order Info">
@@ -53,6 +62,7 @@
                             <field name="sale_order_id"/>
                             <field name="partner_id"/>
                             <field name="partner_created"/>
+                            <field name="neto_total_lines_checked"/>
                         </group>
                     </group>
                     <group>
@@ -101,6 +111,23 @@
                 or enable the scheduled job.
             </p>
         </field>
+    </record>
+
+    <record id="neto_sync_log_repair_missing_skus_action" model="ir.actions.server">
+        <field name="name">Repair Order Lines &amp; Totals</field>
+        <field name="model_id" ref="model_neto_sync_log"/>
+        <field name="state">code</field>
+        <field name="code">result = env['neto.connector'].repair_missing_sku_lines(limit=50)
+action = {
+    'type': 'ir.actions.client',
+    'tag': 'display_notification',
+    'params': {
+        'title': 'Neto Order Lines',
+        'message': '%s line(s) added across %s order(s).' % (result['lines_added'], result['orders_repaired']),
+        'type': 'success' if not result['orders_still_missing'] else 'warning',
+        'sticky': False,
+    },
+}</field>
     </record>
 
 </odoo>

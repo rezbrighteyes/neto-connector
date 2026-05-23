@@ -6,8 +6,11 @@ access_neto_payment_user,neto.payment user,model_neto_payment,base.group_user,1,
 access_neto_payment_manager,neto.payment manager,model_neto_payment,base.group_system,1,1,1,1
 access_neto_invoice_terms_map_user,neto.invoice.terms.map user,model_neto_invoice_terms_map,base.group_user,1,0,0,0
 access_neto_invoice_terms_map_manager,neto.invoice.terms.map manager,model_neto_invoice_terms_map,base.group_system,1,1,1,1
+access_neto_history_import_job_user,neto.history.import.job user,model_neto_history_import_job,base.group_user,1,0,0,0
+access_neto_history_import_job_manager,neto.history.import.job manager,model_neto_history_import_job,base.group_system,1,1,1,1
 access_neto_sync_wizard,neto.sync.wizard admin,model_neto_sync_wizard,base.group_system,1,1,1,1
 access_neto_shipping_audit_wizard,neto.shipping.audit.wizard admin,model_neto_shipping_audit_wizard,base.group_system,1,1,1,1
+access_neto_product_sync_wizard,neto.product.sync.wizard admin,model_neto_product_sync_wizard,base.group_system,1,1,1,1
 access_neto_rma_log_user,neto.rma.log user,model_neto_rma_log,base.group_user,1,1,1,1
 access_neto_product_sync_log_user,neto.product.sync.log user,model_neto_product_sync_log,base.group_user,1,1,1,1
 access_neto_price_map_user,neto.price.map user,model_neto_price_map,base.group_user,1,0,0,0

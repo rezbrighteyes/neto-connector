@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="neto_history_import_job_view_list" model="ir.ui.view">
+        <field name="name">neto.history.import.job.list</field>
+        <field name="model">neto.history.import.job</field>
+        <field name="arch" type="xml">
+            <list string="Neto History Import Jobs"
+                  decoration-success="state == 'done'"
+                  decoration-warning="state == 'running'"
+                  decoration-muted="state == 'cancelled'"
+                  decoration-danger="state == 'error'">
+                <field name="id"/>
+                <field name="name"/>
+                <field name="store_id"/>
+                <field name="date_from"/>
+                <field name="date_to"/>
+                <field name="import_orders"/>
+                <field name="import_payments"/>
+                <field name="state" widget="badge"
+                       decoration-success="state == 'done'"
+                       decoration-warning="state == 'running'"
+                       decoration-danger="state == 'error'"/>
+                <field name="payments_processed"/>
+                <field name="payments_relinked"/>
+                <field name="finished_at"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="neto_history_import_job_view_form" model="ir.ui.view">
+        <field name="name">neto.history.import.job.form</field>
+        <field name="model">neto.history.import.job</field>
+        <field name="arch" type="xml">
+            <form string="Neto History Import Job">
+                <header>
+                    <button name="action_queue"
+                            string="Queue Again"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="state not in ('done', 'error')"/>
+                    <button name="action_process_now"
+                            string="Process Now"
+                            type="object"
+                            class="btn-primary"
+                            invisible="state != 'pending'"/>
+                    <button name="action_cancel"
+                            string="Stop"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="state not in ('pending', 'running')"/>
+                    <button name="action_delete"
+                            string="Delete"
+                            type="object"
+                            class="btn-secondary"
+                            groups="base.group_system"
+                            invisible="state == 'running'"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="pending,running,done,cancelled,error"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="store_id"/>
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                        <group>
+                            <field name="import_orders"/>
+                            <field name="import_payments"/>
+                            <field name="import_as_history"/>
+                            <field name="started_at"/>
+                            <field name="finished_at"/>
+                        </group>
+                    </group>
+                    <group string="Result">
+                        <field name="orders_before"/>
+                        <field name="orders_after"/>
+                        <field name="payments_before"/>
+                        <field name="payments_after"/>
+                        <field name="payments_processed"/>
+                        <field name="payments_relinked"/>
+                    </group>
+                    <group>
+                        <field name="result_message" readonly="1"/>
+                        <field name="error_message" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="neto_history_import_job_action" model="ir.actions.act_window">
+        <field name="name">History Import Jobs</field>
+        <field name="res_model">neto.history.import.job</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="neto_history_import_stop_queue_action" model="ir.actions.server">
+        <field name="name">Stop History Import Queue</field>
+        <field name="model_id" ref="model_neto_history_import_job"/>
+        <field name="state">code</field>
+        <field name="code">action = env['neto.history.import.job'].action_cancel_pending_queue()</field>
+    </record>
+
+</odoo>

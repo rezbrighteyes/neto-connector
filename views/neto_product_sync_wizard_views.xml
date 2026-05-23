@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="neto_product_sync_wizard_view_form" model="ir.ui.view">
+        <field name="name">neto.product.sync.wizard.form</field>
+        <field name="model">neto.product.sync.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Run Neto Product Sync">
+                <group>
+                    <field name="store_id"/>
+                    <field name="import_active_products"/>
+                    <field name="import_inactive_products"/>
+                    <field name="update_stock_quantity"/>
+                </group>
+                <footer>
+                    <button name="action_run_product_sync"
+                            string="Run Product Sync"
+                            type="object"
+                            class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="neto_product_sync_wizard_action" model="ir.actions.act_window">
+        <field name="name">Run Product Sync</field>
+        <field name="res_model">neto.product.sync.wizard</field>
+        <field name="view_id" ref="neto_product_sync_wizard_view_form"/>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+</odoo>
