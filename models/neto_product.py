@@ -861,6 +861,57 @@ class NetoConnector(models.AbstractModel):
         )
         return matched_ids, self._collect_active_signatures(items)
 
+    def _sync_product_stock_store(self, store):
+        if not store.api_key or not store.store_url:
+            _logger.warning(
+                'Neto product stock sync: store "%s" missing api_key or store_url — skipping.',
+                store.name,
+            )
+            return 0
+        _logger.info('Neto product stock sync [%s]: fetching active products', store.name)
+        items = self._fetch_all_products(store, include_active=True, include_inactive=False)
+        updated = 0
+        skipped = 0
+        for item in items:
+            try:
+                product, conflict = self._match_existing_product(store, item)
+                if conflict or not product:
+                    skipped += 1
+                    continue
+                if self._sync_stock_quantity(store, product, item):
+                    updated += 1
+                    if updated % _PRODUCT_WRITE_BATCH_SIZE == 0:
+                        self.env.cr.commit()
+            except Exception as exc:
+                _logger.exception(
+                    'Neto product stock sync [%s]: failed on SKU %s — %s',
+                    store.name, item.get('SKU'), exc,
+                )
+                self.env.cr.commit()
+        self.env.cr.commit()
+        _logger.info(
+            'Neto product stock sync [%s]: completed — %d updated, %d skipped.',
+            store.name, updated, skipped,
+        )
+        return updated
+
+    def run_product_stock_sync(self, store_ids=None):
+        domain = [('active', '=', True)]
+        if store_ids:
+            domain.append(('id', 'in', store_ids))
+        stores = self.env['neto.store'].sudo().search(domain)
+        if not stores:
+            _logger.warning('Neto product stock sync: no active stores configured — aborting.')
+            return
+        for store in stores:
+            try:
+                self._sync_product_stock_store(store)
+            except Exception as exc:
+                _logger.exception(
+                    'Neto product stock sync: store "%s" failed — %s',
+                    store.name, exc,
+                )
+
     def run_product_sync(
         self, store_ids=None, include_active=True, include_inactive=False, sync_stock=True
     ):
