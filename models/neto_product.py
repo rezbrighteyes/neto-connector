@@ -636,6 +636,9 @@ class NetoConnector(models.AbstractModel):
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
         return bool(sku.startswith('p_') and not is_variant)
 
+    def _is_neto_item_active(self, item):
+        return str(item.get('IsActive') or '').strip().lower() != 'false'
+
     def _ensure_stockable_product(self, product):
         template = product.product_tmpl_id
         values = {}
@@ -649,14 +652,16 @@ class NetoConnector(models.AbstractModel):
         if values:
             template.sudo().write(values)
 
-    def _sync_stock_quantity(self, store, product, item):
+    def _sync_stock_quantity(self, store, product, item, update_neto_quantity=True):
         if self._is_parent_stock_item(item):
             self._log_product_sync(
                 store, item, 'skipped', product=product,
                 reason='Skipped parent stock row; variant rows carry sellable quantity',
             )
             return False
-        qty = self._get_neto_available_sell_quantity(item)
+        qty = 0.0
+        if self._is_neto_item_active(item):
+            qty = self._get_neto_available_sell_quantity(item)
         if qty is None:
             return False
         location = store.warehouse_id.lot_stock_id
@@ -671,7 +676,8 @@ class NetoConnector(models.AbstractModel):
             self.env['stock.quant'].sudo().with_company(store.company_id)._update_available_quantity(
                 product, location, delta
             )
-        product.sudo().write({'neto_available_sell_quantity': qty})
+        if update_neto_quantity and (not product.neto_store_id or product.neto_store_id == store):
+            product.sudo().write({'neto_available_sell_quantity': qty})
         return True
 
     def _write_product_record(
@@ -881,8 +887,8 @@ class NetoConnector(models.AbstractModel):
                 store_name,
             )
             return 0
-        _logger.info('Neto product stock sync [%s]: fetching active products', store_name)
-        items = self._fetch_all_products(store, include_active=True, include_inactive=False)
+        _logger.info('Neto product stock sync [%s]: fetching active and inactive products', store_name)
+        items = self._fetch_all_products(store, include_active=True, include_inactive=True)
         updated = 0
         skipped = 0
         seen_product_ids = set()
@@ -901,7 +907,7 @@ class NetoConnector(models.AbstractModel):
                         )
                         continue
                     seen_product_ids.add(product.id)
-                    if self._sync_stock_quantity(store, product, item):
+                    if self._sync_stock_quantity(store, product, item, update_neto_quantity=False):
                         updated += 1
             except Exception as exc:
                 _logger.exception(
@@ -916,10 +922,6 @@ class NetoConnector(models.AbstractModel):
         return updated
 
     def run_product_stock_sync(self, store_ids=None):
-        _logger.warning(
-            'Neto product stock sync is disabled pending inventory mapping audit.'
-        )
-        return 0
         domain = [('active', '=', True)]
         if store_ids:
             domain.append(('id', 'in', store_ids))
