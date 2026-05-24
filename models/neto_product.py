@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import logging
+import time
 
+from psycopg2 import errors as pg_errors
 import requests
 
 from odoo import fields, models
@@ -652,6 +654,20 @@ class NetoConnector(models.AbstractModel):
         if values:
             template.sudo().write(values)
 
+    def _update_available_quantity_with_retry(self, store, product, location, delta, attempts=3):
+        Quant = self.env['stock.quant'].sudo().with_company(store.company_id)
+        product = product.with_company(store.company_id)
+        for attempt in range(1, attempts + 1):
+            try:
+                with self.env.cr.savepoint():
+                    Quant._update_available_quantity(product, location, delta)
+                return True
+            except pg_errors.SerializationFailure:
+                if attempt >= attempts:
+                    raise
+                time.sleep(0.25 * attempt)
+        return False
+
     def _sync_stock_quantity(self, store, product, item, update_neto_quantity=True):
         if self._is_parent_stock_item(item):
             self._log_product_sync(
@@ -673,9 +689,7 @@ class NetoConnector(models.AbstractModel):
         current_qty = product.with_context(location=location.id).qty_available
         delta = round(qty - current_qty, 4)
         if delta:
-            self.env['stock.quant'].sudo().with_company(store.company_id)._update_available_quantity(
-                product, location, delta
-            )
+            self._update_available_quantity_with_retry(store, product, location, delta)
         if update_neto_quantity and (not product.neto_store_id or product.neto_store_id == store):
             product.sudo().write({'neto_available_sell_quantity': qty})
         return True
@@ -931,8 +945,7 @@ class NetoConnector(models.AbstractModel):
         location = store.warehouse_id.lot_stock_id
         if not location:
             return 0
-        Quant = self.env['stock.quant'].sudo().with_company(store.company_id)
-        quants = Quant.search([
+        quants = self.env['stock.quant'].sudo().with_company(store.company_id).search([
             ('location_id', 'child_of', location.id),
             ('quantity', '!=', 0),
         ])
@@ -952,9 +965,7 @@ class NetoConnector(models.AbstractModel):
             ).qty_available
             if not current_qty:
                 continue
-            Quant._update_available_quantity(
-                product.with_company(store.company_id), location, -current_qty
-            )
+            self._update_available_quantity_with_retry(store, product, location, -current_qty)
             self._log_product_sync(
                 store, {'SKU': sku, 'ID': product.neto_product_id or ''}, 'updated',
                 product=product,
