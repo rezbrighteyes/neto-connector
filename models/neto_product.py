@@ -889,6 +889,11 @@ class NetoConnector(models.AbstractModel):
             return 0
         _logger.info('Neto product stock sync [%s]: fetching active and inactive products', store_name)
         items = self._fetch_all_products(store, include_active=True, include_inactive=True)
+        item_skus = {
+            (item.get('SKU') or '').strip()
+            for item in items
+            if (item.get('SKU') or '').strip()
+        }
         updated = 0
         skipped = 0
         seen_product_ids = set()
@@ -914,12 +919,56 @@ class NetoConnector(models.AbstractModel):
                     'Neto product stock sync [%s]: failed on SKU %s — %s',
                     store_name, item.get('SKU'), exc,
                 )
+        updated += self._zero_absent_store_stock(store, item_skus)
         self.env.cr.commit()
         _logger.info(
             'Neto product stock sync [%s]: completed — %d updated, %d skipped.',
             store_name, updated, skipped,
         )
         return updated
+
+    def _zero_absent_store_stock(self, store, item_skus):
+        location = store.warehouse_id.lot_stock_id
+        if not location:
+            return 0
+        Quant = self.env['stock.quant'].sudo().with_company(store.company_id)
+        quants = Quant.search([
+            ('location_id', 'child_of', location.id),
+            ('quantity', '!=', 0),
+        ])
+        updated = 0
+        seen_product_ids = set()
+        for product in quants.mapped('product_id'):
+            if product.id in seen_product_ids:
+                continue
+            seen_product_ids.add(product.id)
+            sku = (product.default_code or '').strip()
+            if not sku or sku in item_skus:
+                continue
+            if not self._is_neto_linked_product(product):
+                continue
+            current_qty = product.with_company(store.company_id).with_context(
+                location=location.id
+            ).qty_available
+            if not current_qty:
+                continue
+            Quant._update_available_quantity(
+                product.with_company(store.company_id), location, -current_qty
+            )
+            self._log_product_sync(
+                store, {'SKU': sku, 'ID': product.neto_product_id or ''}, 'updated',
+                product=product,
+                reason='Zeroed store warehouse stock because SKU is absent from this Neto store',
+            )
+            updated += 1
+        return updated
+
+    def _is_neto_linked_product(self, product):
+        if product.neto_product_id or product.neto_parent_sku or product.neto_store_id:
+            return True
+        if 'x_studio_neto_reference' in product._fields and product.x_studio_neto_reference:
+            return True
+        return False
 
     def run_product_stock_sync(self, store_ids=None):
         domain = [('active', '=', True)]
