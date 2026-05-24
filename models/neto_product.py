@@ -916,6 +916,10 @@ class NetoConnector(models.AbstractModel):
         return updated
 
     def run_product_stock_sync(self, store_ids=None):
+        _logger.warning(
+            'Neto product stock sync is disabled pending inventory mapping audit.'
+        )
+        return 0
         domain = [('active', '=', True)]
         if store_ids:
             domain.append(('id', 'in', store_ids))
