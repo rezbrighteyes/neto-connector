@@ -631,6 +631,11 @@ class NetoConnector(models.AbstractModel):
             found = True
         return total if found else None
 
+    def _is_parent_stock_item(self, item):
+        sku = (item.get('SKU') or '').strip().lower()
+        is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
+        return bool(sku.startswith('p_') and not is_variant)
+
     def _ensure_stockable_product(self, product):
         template = product.product_tmpl_id
         values = {}
@@ -645,6 +650,12 @@ class NetoConnector(models.AbstractModel):
             template.sudo().write(values)
 
     def _sync_stock_quantity(self, store, product, item):
+        if self._is_parent_stock_item(item):
+            self._log_product_sync(
+                store, item, 'skipped', product=product,
+                reason='Skipped parent stock row; variant rows carry sellable quantity',
+            )
+            return False
         qty = self._get_neto_available_sell_quantity(item)
         if qty is None:
             return False
@@ -873,6 +884,7 @@ class NetoConnector(models.AbstractModel):
         items = self._fetch_all_products(store, include_active=True, include_inactive=False)
         updated = 0
         skipped = 0
+        seen_product_ids = set()
         for item in items:
             try:
                 with self.env.cr.savepoint():
@@ -880,6 +892,14 @@ class NetoConnector(models.AbstractModel):
                     if conflict or not product:
                         skipped += 1
                         continue
+                    if product.id in seen_product_ids:
+                        skipped += 1
+                        self._log_product_sync(
+                            store, item, 'skipped', product=product,
+                            reason='Duplicate Neto stock row matched to this Odoo product in the same run',
+                        )
+                        continue
+                    seen_product_ids.add(product.id)
                     if self._sync_stock_quantity(store, product, item):
                         updated += 1
                         if updated % _PRODUCT_WRITE_BATCH_SIZE == 0:
