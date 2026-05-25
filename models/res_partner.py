@@ -16,7 +16,12 @@ class ResPartner(models.Model):
         compute='_compute_neto_payment_count',
     )
 
+    def _get_neto_payment_company_domain(self):
+        company_ids = self.env.companies.ids or [self.env.company.id]
+        return [('company_id', 'in', company_ids)]
+
     @api.depends('child_ids')
+    @api.depends_context('allowed_company_ids')
     def _compute_neto_payment_count(self):
         Payment = self.env['neto.payment'].sudo()
         for partner in self:
@@ -24,9 +29,10 @@ class ResPartner(models.Model):
             partner_ids = self.search([
                 ('id', 'child_of', commercial_partner.id),
             ]).ids
-            partner.neto_payment_count = Payment.search_count([
-                ('partner_id', 'in', partner_ids),
-            ])
+            partner.neto_payment_count = Payment.search_count(
+                [('partner_id', 'in', partner_ids)]
+                + self._get_neto_payment_company_domain()
+            )
 
     def action_view_neto_payments(self):
         self.ensure_one()
@@ -37,7 +43,10 @@ class ResPartner(models.Model):
         action = self.env['ir.actions.act_window']._for_xml_id(
             'Reza_neto_connector.neto_payment_action'
         )
-        action['domain'] = [('partner_id', 'in', partner_ids)]
+        action['domain'] = (
+            [('partner_id', 'in', partner_ids)]
+            + self._get_neto_payment_company_domain()
+        )
         action['context'] = {'default_partner_id': self.id}
         action['name'] = 'Neto Payments'
         return action
