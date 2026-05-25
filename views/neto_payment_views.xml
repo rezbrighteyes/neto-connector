@@ -10,6 +10,7 @@
                 <field name="neto_payment_id"/>
                 <field name="neto_order_id"/>
                 <field name="sale_order_id"/>
+                <field name="sale_order_date" optional="show"/>
                 <field name="partner_id"/>
                 <field name="store_id"/>
                 <field name="amount_paid"/>
@@ -46,6 +47,7 @@
                         </group>
                         <group string="Odoo Link">
                             <field name="sale_order_id"/>
+                            <field name="sale_order_date"/>
                             <field name="partner_id"/>
                             <field name="days_to_pay"/>
                             <field name="is_late"/>

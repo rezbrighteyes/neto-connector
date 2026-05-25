@@ -1033,25 +1033,30 @@ class NetoConnector(models.AbstractModel):
     # Invoice creation
     # -------------------------------------------------------------------------
 
-    def _get_payment_journal(self, payment_method):
+    def _get_payment_journal(self, payment_method, company=None):
         """Return an account.journal for the given payment method name."""
         Journal = self.env['account.journal'].sudo()
+        domain = [('type', 'in', ('bank', 'cash'))]
+        if company:
+            domain.append(('company_id', '=', company.id))
         if payment_method:
             journal = Journal.search(
-                [('type', 'in', ('bank', 'cash')), ('name', 'ilike', payment_method)],
+                domain + [('name', 'ilike', payment_method)],
                 limit=1,
             )
             if journal:
                 _logger.info(
-                    'Neto sync: payment journal "%s" selected for method "%s"',
+                    'Neto sync: payment journal "%s" selected for method "%s"%s',
                     journal.name, payment_method,
+                    ' in company "%s"' % company.display_name if company else '',
                 )
                 return journal
             _logger.warning(
-                'Neto sync: no journal matching "%s" — using first available bank/cash journal',
+                'Neto sync: no journal matching "%s"%s — using first available bank/cash journal',
                 payment_method,
+                ' in company "%s"' % company.display_name if company else '',
             )
-        journal = Journal.search([('type', 'in', ('bank', 'cash'))], limit=1)
+        journal = Journal.search(domain, limit=1)
         if journal:
             _logger.info('Neto sync: fallback payment journal "%s" selected', journal.name)
         return journal
@@ -1074,7 +1079,7 @@ class NetoConnector(models.AbstractModel):
             )
 
             if date_paid and payment_method:
-                journal = self._get_payment_journal(payment_method)
+                journal = self._get_payment_journal(payment_method, order.company_id)
                 if not journal:
                     _logger.warning(
                         'Neto sync: no payment journal found for order %s — skipping payment registration',
@@ -1086,13 +1091,14 @@ class NetoConnector(models.AbstractModel):
                 # This handles partial payments correctly
                 pay_amount = amount_paid if amount_paid else invoice.amount_total
 
-                payment = self.env['account.payment'].sudo().create({
+                payment = self.env['account.payment'].sudo().with_company(order.company_id).create({
                     'payment_type':  'inbound',
                     'partner_type':  'customer',
                     'partner_id':    order.partner_id.id,
                     'amount':        pay_amount,
                     'date':          date_paid,
                     'journal_id':    journal.id,
+                    'company_id':    order.company_id.id,
                 })
                 payment.sudo().action_post()
                 payment.sudo().invalidate_recordset()
@@ -1961,17 +1967,18 @@ class NetoConnector(models.AbstractModel):
             payment_method = (refund.get('PaymentMethodName') or '').strip() or None
             if not refund_amount or not date_refunded:
                 continue
-            journal = self._get_payment_journal(payment_method)
+            journal = self._get_payment_journal(payment_method, store.company_id)
             if not journal:
                 continue
             try:
-                payment = self.env['account.payment'].sudo().create({
+                payment = self.env['account.payment'].sudo().with_company(store.company_id).create({
                     'payment_type': 'outbound',
                     'partner_type': 'customer',
                     'partner_id':   partner.id,
                     'amount':       refund_amount,
                     'date':         date_refunded,
                     'journal_id':   journal.id,
+                    'company_id':   store.company_id.id,
                 })
                 payment.sudo().action_post()
                 payment.sudo().invalidate_recordset()

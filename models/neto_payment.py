@@ -17,6 +17,12 @@ class NetoPayment(models.Model):
     neto_payment_id = fields.Char(string='Neto Payment ID', required=True, index=True, copy=False)
     neto_order_id = fields.Char(string='Neto Order ID', index=True, copy=False)
     sale_order_id = fields.Many2one('sale.order', string='Sale Order', index=True, ondelete='set null')
+    sale_order_date = fields.Datetime(
+        string='Order Date',
+        related='sale_order_id.date_order',
+        readonly=True,
+        store=True,
+    )
     partner_id = fields.Many2one('res.partner', string='Customer', index=True, ondelete='set null')
     store_id = fields.Many2one('neto.store', string='Neto Store', required=True, index=True, ondelete='restrict')
     company_id = fields.Many2one('res.company', string='Company', required=True, index=True, ondelete='restrict')
