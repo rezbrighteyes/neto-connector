@@ -13,8 +13,8 @@ _logger = logging.getLogger(__name__)
 _GST_DIVISOR = 1.1
 _PRODUCT_PAGE_SIZE = 100
 _PRODUCT_WRITE_BATCH_SIZE = 50
-_CATCHALL_PARENT_NAME = 'Neto'
-_CATCHALL_CHILD_NAME = 'Uncategorized'
+_SALEABLE_CATEGORY_ROOT = ('All', 'Saleable')
+_CATCHALL_CATEGORY_NAME = 'Neto'
 _GLE_REVIEW_TAG = 'pricing-needs-review'
 _NETO_VARIANT_ATTRIBUTE = 'Neto Variant SKU'
 _EDBERT_COMPANY_ID = 1
@@ -301,31 +301,56 @@ class NetoConnector(models.AbstractModel):
         ]
         return any('global' in value for value in values)
 
+    def _get_or_create_category_path(self, names):
+        Category = self.env['product.category'].sudo()
+        parent = False
+        category = False
+        for name in names:
+            name = (name or '').strip()
+            if not name:
+                continue
+            domain = [('name', '=', name)]
+            if parent:
+                domain.append(('parent_id', '=', parent.id))
+            else:
+                domain.append(('parent_id', '=', False))
+            category = Category.search(domain, limit=1)
+            if not category:
+                values = {'name': name}
+                if parent:
+                    values['parent_id'] = parent.id
+                category = Category.create(values)
+            parent = category
+        return category
+
+    def _normalize_neto_category_path(self, categories):
+        cleaned = []
+        for category in categories:
+            name = (category or '').strip()
+            if name and name not in cleaned:
+                cleaned.append(name)
+        while cleaned and cleaned[0].strip().lower() == 'all':
+            cleaned.pop(0)
+        while cleaned and cleaned[0].strip().lower() == 'saleable':
+            cleaned.pop(0)
+        if not cleaned:
+            cleaned = [_CATCHALL_CATEGORY_NAME]
+        return list(_SALEABLE_CATEGORY_ROOT) + cleaned
+
     def _get_or_create_catchall_category(self, store):
         if store.neto_default_categ_id:
             return store.neto_default_categ_id
-        Category = self.env['product.category'].sudo()
-        parent = Category.search([('name', '=', _CATCHALL_PARENT_NAME)], limit=1)
-        if not parent:
-            parent = Category.create({'name': _CATCHALL_PARENT_NAME})
-        category = Category.search(
-            [('name', '=', _CATCHALL_CHILD_NAME), ('parent_id', '=', parent.id)],
-            limit=1,
+        return self._get_or_create_category_path(
+            list(_SALEABLE_CATEGORY_ROOT) + [_CATCHALL_CATEGORY_NAME]
         )
-        if not category:
-            category = Category.create({'name': _CATCHALL_CHILD_NAME, 'parent_id': parent.id})
-        return category
 
     def _get_or_create_category(self, store, item):
         categories = self._get_neto_categories(item)
         if not categories:
             return self._get_or_create_catchall_category(store)
-        category_name = categories[-1]
-        Category = self.env['product.category'].sudo()
-        category = Category.search([('name', '=', category_name)], limit=1)
-        if category:
-            return category
-        return Category.create({'name': category_name})
+        return self._get_or_create_category_path(
+            self._normalize_neto_category_path(categories)
+        )
 
     def _get_pricing_review_tag(self):
         Tag = self.env['product.tag'].sudo()
