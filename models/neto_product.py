@@ -654,7 +654,7 @@ class NetoConnector(models.AbstractModel):
         if values:
             template.sudo().write(values)
 
-    def _update_available_quantity_with_retry(self, store, product, location, delta, attempts=3):
+    def _update_available_quantity_with_retry(self, store, product, location, delta, attempts=6):
         Quant = self.env['stock.quant'].sudo().with_company(store.company_id)
         product = product.with_company(store.company_id)
         for attempt in range(1, attempts + 1):
@@ -965,7 +965,20 @@ class NetoConnector(models.AbstractModel):
             ).qty_available
             if not current_qty:
                 continue
-            self._update_available_quantity_with_retry(store, product, location, -current_qty)
+            try:
+                self._update_available_quantity_with_retry(store, product, location, -current_qty)
+            except pg_errors.SerializationFailure as exc:
+                _logger.warning(
+                    'Neto product stock sync [%s]: skipped zeroing SKU %s after stock quant '
+                    'lock retries — %s',
+                    store.name, sku, exc,
+                )
+                self._log_product_sync(
+                    store, {'SKU': sku, 'ID': product.neto_product_id or ''}, 'skipped',
+                    product=product,
+                    reason='Skipped absent-store zeroing because stock quant stayed locked',
+                )
+                continue
             self._log_product_sync(
                 store, {'SKU': sku, 'ID': product.neto_product_id or ''}, 'updated',
                 product=product,
