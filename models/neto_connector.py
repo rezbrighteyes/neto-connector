@@ -70,6 +70,9 @@ _GETITEM_OUTPUT = [
     'UPC', 'UPC1',
     'ShippingWeight',
     'IsActive', 'IsVariant',
+    'WarehouseQuantity',
+    'AvailableSellQuantity',
+    'CommittedQuantity',
     'Categories', 'ReferenceNumber', 'PriceGroups',
 ]
 
@@ -381,8 +384,8 @@ class NetoConnector(models.AbstractModel):
     # Auto-create missing products via GetItem
     # -------------------------------------------------------------------------
 
-    def _fetch_neto_item(self, store, sku):
-        """Call Neto GetItem for a single SKU. Returns the item dict or None."""
+    def _fetch_neto_items_by_filter(self, store, filter_values, timeout=30):
+        """Call Neto GetItem and return a normalized list of item dicts."""
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -392,32 +395,46 @@ class NetoConnector(models.AbstractModel):
         }
         payload = {
             'Filter': {
-                'SKU': [sku],
                 'OutputSelector': _GETITEM_OUTPUT,
             }
         }
+        payload['Filter'].update(filter_values)
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
             response.raise_for_status()
             body = response.json()
         except Exception as exc:
-            _logger.warning('Neto sync: GetItem failed for SKU %s — %s', sku, exc)
-            return None
+            _logger.warning('Neto sync: GetItem failed for filter %s — %s', filter_values, exc)
+            return []
+
+        if hasattr(self, '_extract_items_from_getitem_response'):
+            return self._extract_items_from_getitem_response(body)
 
         if 'GetItemResponse' in body:
             items = body['GetItemResponse'].get('Item', [])
         else:
             items = body.get('Item', [])
-
         if isinstance(items, dict):
             items = [items]
-        items = items or []
+        return items or []
 
+    def _fetch_neto_item(self, store, sku):
+        """Call Neto GetItem for a single SKU. Returns the item dict or None."""
+        items = self._fetch_neto_items_by_filter(store, {'SKU': [sku]})
         if not items:
             _logger.warning('Neto sync: GetItem returned no data for SKU %s', sku)
             return None
-
         return items[0]
+
+    def _fetch_neto_variant_items(self, store, parent_sku):
+        """Return Neto variant rows for a parent/generic SKU."""
+        parent_sku = (parent_sku or '').strip()
+        if not parent_sku:
+            return []
+        items = self._fetch_neto_items_by_filter(store, {'ParentSKU': [parent_sku]})
+        if not items:
+            _logger.warning('Neto sync: GetItem returned no variant data for ParentSKU %s', parent_sku)
+        return items
 
     def _get_or_create_product_from_neto(self, store, sku, line_data):
         """Look up SKU in Odoo; if missing, call GetItem and create a placeholder product.
@@ -2029,7 +2046,7 @@ class NetoConnector(models.AbstractModel):
                 return
             synced_rma_ids.add(rma_id)
 
-            lookup_id = invoice_number or order_id_field
+            lookup_id = order_id_field or invoice_number
             original_order = None
             original_invoice = None
 

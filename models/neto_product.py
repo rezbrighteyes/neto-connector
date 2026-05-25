@@ -56,6 +56,15 @@ def _to_float(value):
         return 0.0
 
 
+def _to_optional_float(value):
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_tax_inclusive(item):
     return str(item.get('TaxInclusive') or '').strip().lower() == 'true'
 
@@ -157,6 +166,17 @@ class NetoProductSyncLog(models.Model):
 class NetoConnector(models.AbstractModel):
     _inherit = 'neto.connector'
 
+    def _extract_items_from_getitem_response(self, body):
+        if not isinstance(body, dict):
+            return []
+        if 'GetItemResponse' in body:
+            items = body['GetItemResponse'].get('Item', [])
+        else:
+            items = body.get('Item', [])
+        if isinstance(items, dict):
+            items = [items]
+        return items or []
+
     def _fetch_products_page(self, store, page=1, limit=_PRODUCT_PAGE_SIZE, active_filter='True'):
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
@@ -177,10 +197,7 @@ class NetoConnector(models.AbstractModel):
         response = requests.post(url, json=payload, headers=headers, timeout=90)
         response.raise_for_status()
         body = response.json()
-        items = body.get('Item', [])
-        if isinstance(items, dict):
-            items = [items]
-        return items or []
+        return self._extract_items_from_getitem_response(body)
 
     def _fetch_all_products(self, store, include_active=True, include_inactive=False):
         items = []
@@ -613,32 +630,55 @@ class NetoConnector(models.AbstractModel):
         return isinstance(exc, ValidationError) and 'Barcode(s) already assigned' in str(exc)
 
     def _get_neto_available_sell_quantity(self, item):
-        for key in ('AvailableSellQuantity', 'QtyInStock', 'QuantityOnHand'):
-            if item.get(key) not in (None, ''):
-                return _to_float(item.get(key))
+        quantity_keys = (
+            'AvailableSellQuantity',
+            'AvailableQuantity',
+            'QuantityAvailable',
+            'QtyAvailable',
+            'Available',
+            'AvailableStock',
+            'StockAvailable',
+            'FreeStock',
+            'SellableQuantity',
+            'AvailableForSale',
+            'QtyInStock',
+            'QuantityOnHand',
+            'Quantity',
+            'Qty',
+        )
+        for key in quantity_keys:
+            qty = _to_optional_float(item.get(key))
+            if qty is not None:
+                return qty
 
         warehouse_quantity = item.get('WarehouseQuantity') or []
-        if isinstance(warehouse_quantity, dict):
-            warehouse_quantity = warehouse_quantity.get('Warehouse') or warehouse_quantity.get('WarehouseQuantity') or [warehouse_quantity]
-        if isinstance(warehouse_quantity, dict):
-            warehouse_quantity = [warehouse_quantity]
-        if not isinstance(warehouse_quantity, list):
-            return None
+
+        def _iter_warehouse_records(value):
+            if isinstance(value, list):
+                for entry in value:
+                    yield from _iter_warehouse_records(entry)
+            elif isinstance(value, dict):
+                yielded_nested = False
+                for nested_key in ('Warehouse', 'WarehouseQuantity'):
+                    nested = value.get(nested_key)
+                    if nested:
+                        yielded_nested = True
+                        yield from _iter_warehouse_records(nested)
+                if not yielded_nested:
+                    yield value
 
         def _extract_quantity(record):
             if not isinstance(record, dict):
                 return None
-            for key in ('Quantity', 'Qty', 'AvailableSellQuantity'):
-                if record.get(key) not in (None, ''):
-                    return _to_float(record.get(key))
-            nested = record.get('Warehouse') or record.get('WarehouseQuantity')
-            if isinstance(nested, dict):
-                return _extract_quantity(nested)
+            for key in quantity_keys:
+                qty = _to_optional_float(record.get(key))
+                if qty is not None:
+                    return qty
             return None
 
         total = 0.0
         found = False
-        for warehouse in warehouse_quantity:
+        for warehouse in _iter_warehouse_records(warehouse_quantity):
             quantity = _extract_quantity(warehouse)
             if quantity is None:
                 continue
@@ -646,10 +686,22 @@ class NetoConnector(models.AbstractModel):
             found = True
         return total if found else None
 
-    def _is_parent_stock_item(self, item):
+    def _collect_variant_parent_skus(self, items):
+        parent_skus = set()
+        for item in items:
+            is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
+            parent_sku = (item.get('ParentSKU') or '').strip().lower()
+            if is_variant and parent_sku and parent_sku != '0':
+                parent_skus.add(parent_sku)
+        return parent_skus
+
+    def _is_parent_stock_item(self, item, variant_parent_skus=None):
         sku = (item.get('SKU') or '').strip().lower()
         is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
-        return bool(sku.startswith('p_') and not is_variant)
+        if is_variant:
+            return False
+        parent_skus = variant_parent_skus or set()
+        return bool(sku and sku in parent_skus)
 
     def _is_neto_item_active(self, item):
         return str(item.get('IsActive') or '').strip().lower() != 'false'
@@ -681,8 +733,8 @@ class NetoConnector(models.AbstractModel):
                 time.sleep(0.25 * attempt)
         return False
 
-    def _sync_stock_quantity(self, store, product, item, update_neto_quantity=True):
-        if self._is_parent_stock_item(item):
+    def _sync_stock_quantity(self, store, product, item, update_neto_quantity=True, variant_parent_skus=None):
+        if self._is_parent_stock_item(item, variant_parent_skus=variant_parent_skus):
             self._log_product_sync(
                 store, item, 'skipped', product=product,
                 reason='Skipped parent stock row; variant rows carry sellable quantity',
@@ -921,6 +973,7 @@ class NetoConnector(models.AbstractModel):
             return 0
         _logger.info('Neto product stock sync [%s]: fetching active and inactive products', store_name)
         items = self._fetch_all_products(store, include_active=True, include_inactive=True)
+        variant_parent_skus = self._collect_variant_parent_skus(items)
         item_skus = {
             (item.get('SKU') or '').strip()
             for item in items
@@ -945,7 +998,11 @@ class NetoConnector(models.AbstractModel):
                         )
                         continue
                     seen_product_ids.add(product.id)
-                    if self._sync_stock_quantity(store, product, item, update_neto_quantity=False):
+                    if self._sync_stock_quantity(
+                        store, product, item,
+                        update_neto_quantity=False,
+                        variant_parent_skus=variant_parent_skus,
+                    ):
                         updated += 1
             except Exception as exc:
                 _logger.exception(
