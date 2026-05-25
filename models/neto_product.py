@@ -679,7 +679,7 @@ class NetoConnector(models.AbstractModel):
         if self._is_neto_item_active(item):
             qty = self._get_neto_available_sell_quantity(item)
         if qty is None:
-            return False
+            qty = 0.0
         location = store.warehouse_id.lot_stock_id
         if not location:
             self._log_product_sync(store, item, 'skipped', product=product, reason='Store warehouse has no stock location')
