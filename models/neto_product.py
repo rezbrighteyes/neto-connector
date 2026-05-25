@@ -469,6 +469,19 @@ class NetoConnector(models.AbstractModel):
             return False, True
         return False, False
 
+    def _match_exact_stock_product(self, item):
+        sku = (item.get('SKU') or '').strip()
+        if not sku:
+            return False, 'Skipped stock row without SKU'
+        Product = self.env['product.product'].sudo().with_context(active_test=False)
+        products = Product.search([('default_code', '=', sku)])
+        product, conflict = self._select_active_unique_match(products)
+        if conflict:
+            return False, 'Skipped stock row because exact SKU matches multiple Odoo products'
+        if not product:
+            return False, 'Skipped stock row because exact SKU does not exist in Odoo'
+        return product, False
+
     def _sync_pricelist_price(self, pricelist, product, sale_price):
         if not pricelist:
             return
@@ -675,11 +688,16 @@ class NetoConnector(models.AbstractModel):
                 reason='Skipped parent stock row; variant rows carry sellable quantity',
             )
             return False
-        qty = 0.0
-        if self._is_neto_item_active(item):
-            qty = self._get_neto_available_sell_quantity(item)
-        if qty is None:
+        if not self._is_neto_item_active(item):
             qty = 0.0
+        else:
+            qty = self._get_neto_available_sell_quantity(item)
+            if qty is None:
+                self._log_product_sync(
+                    store, item, 'skipped', product=product,
+                    reason='Skipped active stock row because Neto did not provide an explicit quantity',
+                )
+                return False
         location = store.warehouse_id.lot_stock_id
         if not location:
             self._log_product_sync(store, item, 'skipped', product=product, reason='Store warehouse has no stock location')
@@ -911,19 +929,15 @@ class NetoConnector(models.AbstractModel):
         updated = 0
         skipped = 0
         seen_product_ids = set()
-        seen_exact_product_ids = set()
         for item in items:
             try:
                 with self.env.cr.savepoint():
-                    product, conflict = self._match_existing_product(store, item)
-                    if conflict or not product:
+                    product, reason = self._match_exact_stock_product(item)
+                    if not product:
                         skipped += 1
+                        self._log_product_sync(store, item, 'skipped', reason=reason)
                         continue
-                    sku = (item.get('SKU') or '').strip()
-                    is_exact_sku = bool(sku and sku == (product.default_code or '').strip())
-                    if product.id in seen_product_ids and (
-                        product.id in seen_exact_product_ids or not is_exact_sku
-                    ):
+                    if product.id in seen_product_ids:
                         skipped += 1
                         self._log_product_sync(
                             store, item, 'skipped', product=product,
@@ -931,8 +945,6 @@ class NetoConnector(models.AbstractModel):
                         )
                         continue
                     seen_product_ids.add(product.id)
-                    if is_exact_sku:
-                        seen_exact_product_ids.add(product.id)
                     if self._sync_stock_quantity(store, product, item, update_neto_quantity=False):
                         updated += 1
             except Exception as exc:
