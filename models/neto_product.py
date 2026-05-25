@@ -911,6 +911,7 @@ class NetoConnector(models.AbstractModel):
         updated = 0
         skipped = 0
         seen_product_ids = set()
+        seen_exact_product_ids = set()
         for item in items:
             try:
                 with self.env.cr.savepoint():
@@ -918,7 +919,11 @@ class NetoConnector(models.AbstractModel):
                     if conflict or not product:
                         skipped += 1
                         continue
-                    if product.id in seen_product_ids:
+                    sku = (item.get('SKU') or '').strip()
+                    is_exact_sku = bool(sku and sku == (product.default_code or '').strip())
+                    if product.id in seen_product_ids and (
+                        product.id in seen_exact_product_ids or not is_exact_sku
+                    ):
                         skipped += 1
                         self._log_product_sync(
                             store, item, 'skipped', product=product,
@@ -926,6 +931,8 @@ class NetoConnector(models.AbstractModel):
                         )
                         continue
                     seen_product_ids.add(product.id)
+                    if is_exact_sku:
+                        seen_exact_product_ids.add(product.id)
                     if self._sync_stock_quantity(store, product, item, update_neto_quantity=False):
                         updated += 1
             except Exception as exc:
