@@ -521,6 +521,16 @@ class NetoConnector(models.AbstractModel):
             ], limit=1)
             if product:
                 return product, False
+            products = Product.search([('neto_product_id', '=', neto_product_id)])
+            matched, conflict = self._select_active_unique_match(products)
+            if matched:
+                return matched, False
+            if conflict:
+                _logger.info(
+                    'Neto product sync: ignoring shared Neto product ID %s matched to %d product(s)',
+                    neto_product_id, len(products),
+                )
+                return False, True
         reference_candidates = _get_neto_reference_candidates(item)
         for sku_variant in sku_variants:
             if sku_variant not in reference_candidates:
