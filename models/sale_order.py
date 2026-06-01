@@ -173,19 +173,49 @@ class SaleOrder(models.Model):
         product = line.product_id
         if not product:
             return ""
+        link = self._get_neto_history_product_link(product)
         barcode_rule = self._get_neto_history_invoice_barcode_rule()
         if barcode_rule == "generic":
             return (
-                self._get_neto_history_product_barcode(product, "reza_generic_barcode")
+                (link.neto_generic_barcode if link else "")
+                or (link.neto_barcode if link else "")
+                or self._get_neto_history_product_barcode(product, "reza_generic_barcode")
                 or self._get_neto_history_product_barcode(product, "barcode")
                 or product.default_code
+                or product.neto_product_id
+                or (link.neto_sku if link else "")
+                or (link.neto_product_id if link else "")
                 or ""
             )
         return (
-            self._get_neto_history_product_barcode(product, "barcode")
+            (link.neto_barcode if link else "")
+            or self._get_neto_history_product_barcode(product, "barcode")
+            or self._get_neto_history_product_barcode(product, "reza_generic_barcode")
             or product.default_code
+            or product.neto_product_id
+            or (link.neto_sku if link else "")
+            or (link.neto_product_id if link else "")
             or ""
         )
+
+    def _get_neto_history_product_link(self, product):
+        self.ensure_one()
+        if not product:
+            return self.env["neto.product.link"]
+        Store = self.env["neto.store"].sudo()
+        Link = self.env["neto.product.link"].sudo()
+        store = Store.search([("company_id", "=", self.company_id.id)], limit=1)
+        if store:
+            link = Link.search([
+                ("product_id", "=", product.id),
+                ("store_id", "=", store.id),
+            ], limit=1)
+            if link:
+                return link
+        return Link.search([
+            ("product_id", "=", product.id),
+            ("company_id", "=", self.company_id.id),
+        ], limit=1)
 
     def _get_neto_history_invoice_barcode_rule(self):
         self.ensure_one()

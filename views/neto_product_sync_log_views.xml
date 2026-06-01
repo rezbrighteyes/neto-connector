@@ -13,6 +13,7 @@
                 <field name="store_id"/>
                 <field name="neto_sku"/>
                 <field name="neto_product_id" optional="show"/>
+                <field name="link_id" optional="show"/>
                 <field name="product_id"/>
                 <field name="action" widget="badge"
                        decoration-success="action in ('created', 'updated')"
@@ -41,6 +42,7 @@
                         <group>
                             <field name="neto_sku"/>
                             <field name="neto_product_id"/>
+                            <field name="link_id"/>
                             <field name="product_id"/>
                         </group>
                     </group>

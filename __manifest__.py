@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Neto Order Sync for Odoo',
-    'version': '19.0.1.5.16',
+    'version': '19.0.1.5.17',
     'author': 'Reza Shiraz',
     'license': 'OPL-1',
     'category': 'Sales/Sales',
@@ -28,6 +28,7 @@ single order by Neto Order ID via Neto Sync > Sync Single Order.
         'views/neto_invoice_terms_map_views.xml',
         'views/neto_history_import_job_views.xml',
         'views/neto_price_map_views.xml',
+        'views/neto_product_link_views.xml',
         'views/neto_product_sync_wizard_views.xml',
         'views/neto_product_sync_log_views.xml',
         'views/product_product_views.xml',
@@ -46,4 +47,5 @@ single order by Neto Order ID via Neto Sync > Sync Single Order.
     'installable': True,
     'application': False,
     'auto_install': False,
+    'post_init_hook': 'post_init_hook',
 }

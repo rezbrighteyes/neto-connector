@@ -112,11 +112,17 @@
               action="neto_product_sync_log_action"
               sequence="20"/>
 
+    <menuitem id="menu_neto_product_links"
+              name="Product Links"
+              parent="menu_neto_products"
+              action="neto_product_link_action"
+              sequence="30"/>
+
     <menuitem id="menu_neto_price_maps"
               name="Price Maps"
               parent="menu_neto_products"
               action="neto_price_map_action"
-              sequence="30"/>
+              sequence="40"/>
 
     <!-- Configuration -->
     <menuitem id="menu_neto_stores"

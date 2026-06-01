@@ -27,7 +27,7 @@ class NetoProductSyncWizard(models.TransientModel):
             store_ids=store_ids,
             include_active=self.import_active_products,
             include_inactive=self.import_inactive_products,
-            sync_stock=False,
+            sync_stock=self.update_stock_quantity,
         )
 
         domain = []

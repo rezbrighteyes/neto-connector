@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="neto_product_link_view_list" model="ir.ui.view">
+        <field name="name">neto.product.link.list</field>
+        <field name="model">neto.product.link</field>
+        <field name="arch" type="xml">
+            <list string="Neto Product Links"
+                  decoration-muted="not is_active">
+                <field name="store_id"/>
+                <field name="company_id" optional="show"/>
+                <field name="product_id"/>
+                <field name="neto_sku"/>
+                <field name="neto_product_id"/>
+                <field name="neto_barcode"/>
+                <field name="available_sell_quantity"/>
+                <field name="is_active"/>
+                <field name="last_sync_date"/>
+                <field name="last_sync_note" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="neto_product_link_view_form" model="ir.ui.view">
+        <field name="name">neto.product.link.form</field>
+        <field name="model">neto.product.link</field>
+        <field name="arch" type="xml">
+            <form string="Neto Product Link">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="store_id"/>
+                            <field name="company_id"/>
+                            <field name="product_id"/>
+                            <field name="is_active"/>
+                        </group>
+                        <group>
+                            <field name="neto_sku"/>
+                            <field name="neto_product_id"/>
+                            <field name="neto_parent_sku"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group>
+                            <field name="neto_barcode"/>
+                            <field name="neto_generic_barcode"/>
+                            <field name="available_sell_quantity"/>
+                        </group>
+                        <group>
+                            <field name="neto_name"/>
+                            <field name="neto_model"/>
+                            <field name="neto_brand"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="last_sync_date"/>
+                        <field name="last_sync_note" widget="text"/>
+                        <field name="warehouse_quantity_json" widget="text"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="neto_product_link_view_search" model="ir.ui.view">
+        <field name="name">neto.product.link.search</field>
+        <field name="model">neto.product.link</field>
+        <field name="arch" type="xml">
+            <search string="Neto Product Links">
+                <field name="store_id"/>
+                <field name="company_id"/>
+                <field name="product_id"/>
+                <field name="neto_sku"/>
+                <field name="neto_product_id"/>
+                <field name="neto_barcode"/>
+                <filter name="active" string="Active" domain="[('is_active', '=', True)]"/>
+                <filter name="inactive" string="Inactive" domain="[('is_active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_store" string="Store" context="{'group_by': 'store_id'}"/>
+                    <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
+                    <filter name="group_product" string="Odoo Product" context="{'group_by': 'product_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="neto_product_link_action" model="ir.actions.act_window">
+        <field name="name">Product Links</field>
+        <field name="res_model">neto.product.link</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="neto_product_link_view_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No Neto product links yet.
+            </p>
+            <p>
+                Product sync creates one link per Neto store and Odoo product.
+            </p>
+        </field>
+    </record>
+
+</odoo>

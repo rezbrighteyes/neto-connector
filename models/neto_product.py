@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
+import json
 import logging
 import time
 
 from psycopg2 import errors as pg_errors
 import requests
 
-from odoo import fields, models
+from odoo import api, fields, models
 from odoo.exceptions import ValidationError
 
 _logger = logging.getLogger(__name__)
@@ -39,6 +40,8 @@ _PRODUCT_OUTPUT_SELECTOR = [
     'Categories',
     'ReferenceNumber',
     'PriceGroups',
+    'Model',
+    'Brand',
 ]
 
 
@@ -159,6 +162,81 @@ class ProductProduct(models.Model):
         copy=False,
         readonly=True,
     )
+    neto_product_link_ids = fields.One2many(
+        'neto.product.link',
+        'product_id',
+        string='Neto Product Links',
+        readonly=True,
+    )
+
+
+class NetoProductLink(models.Model):
+    _name = 'neto.product.link'
+    _description = 'Neto Product Link'
+    _order = 'store_id, neto_sku, neto_product_id, id'
+
+    product_id = fields.Many2one(
+        'product.product',
+        string='Odoo Product',
+        required=True,
+        index=True,
+        ondelete='cascade',
+    )
+    store_id = fields.Many2one(
+        'neto.store',
+        string='Store',
+        required=True,
+        index=True,
+        ondelete='cascade',
+    )
+    company_id = fields.Many2one(
+        'res.company',
+        string='Company',
+        related='store_id.company_id',
+        store=True,
+        index=True,
+    )
+    neto_product_id = fields.Char(string='Neto Product ID', index=True)
+    neto_sku = fields.Char(string='Neto SKU', index=True)
+    neto_barcode = fields.Char(string='Neto Barcode', index=True)
+    neto_generic_barcode = fields.Char(string='Neto Generic Barcode', index=True)
+    neto_parent_sku = fields.Char(string='Neto Parent SKU', index=True)
+    neto_name = fields.Char(string='Neto Name')
+    neto_model = fields.Char(string='Neto Model')
+    neto_brand = fields.Char(string='Neto Brand')
+    is_active = fields.Boolean(string='Active in Neto', default=True)
+    available_sell_quantity = fields.Float(string='Available Sell Qty')
+    warehouse_quantity_json = fields.Text(string='Warehouse Quantity JSON')
+    last_sync_date = fields.Datetime(string='Last Sync Date')
+    last_sync_note = fields.Text(string='Last Sync Note')
+
+    _sql_constraints = [
+        (
+            'neto_product_link_store_product_id_uniq',
+            'unique(store_id, neto_product_id)',
+            'A Neto product ID can only be linked once per store.',
+        ),
+    ]
+
+    @api.constrains('store_id', 'neto_sku')
+    def _check_unique_store_sku(self):
+        for link in self:
+            sku = (link.neto_sku or '').strip()
+            if not link.store_id or not sku:
+                continue
+            duplicate = self.search([
+                ('id', '!=', link.id),
+                ('store_id', '=', link.store_id.id),
+                ('neto_sku', '=', sku),
+            ], limit=1)
+            if duplicate:
+                raise ValidationError(
+                    'Neto SKU %s is already linked for store %s.'
+                    % (sku, link.store_id.display_name)
+                )
+
+    def action_backfill_legacy_product_links(self):
+        return self.env['neto.connector'].sudo().backfill_legacy_product_links()
 
 
 class NetoProductSyncLog(models.Model):
@@ -169,6 +247,7 @@ class NetoProductSyncLog(models.Model):
     store_id = fields.Many2one('neto.store', string='Store', ondelete='set null', index=True)
     neto_sku = fields.Char(string='Neto SKU', index=True)
     neto_product_id = fields.Char(string='Neto Product ID', index=True)
+    link_id = fields.Many2one('neto.product.link', string='Product Link', ondelete='set null', index=True)
     product_id = fields.Many2one('product.product', string='Odoo Product', ondelete='set null', index=True)
     action = fields.Selection(
         [
@@ -510,11 +589,18 @@ class NetoConnector(models.AbstractModel):
 
     def _match_existing_product(self, store, item):
         Product = self.env['product.product'].sudo().with_context(active_test=False)
+        ProductLink = self.env['neto.product.link'].sudo()
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
         sku = (item.get('SKU') or '').strip()
         sku_variants = _get_sku_variants(sku)
         saw_ambiguous_sku_match = False
         if neto_product_id:
+            link = ProductLink.search([
+                ('store_id', '=', store.id),
+                ('neto_product_id', '=', neto_product_id),
+            ], limit=1)
+            if link:
+                return link.product_id, False
             product = Product.search([
                 ('neto_store_id', '=', store.id),
                 ('neto_product_id', '=', neto_product_id),
@@ -542,6 +628,13 @@ class NetoConnector(models.AbstractModel):
                         neto_product_id, len(products),
                     )
                     return False, True
+        for sku_variant in sku_variants:
+            link = ProductLink.search([
+                ('store_id', '=', store.id),
+                ('neto_sku', '=', sku_variant),
+            ], limit=1)
+            if link:
+                return link.product_id, False
         reference_candidates = _get_neto_reference_candidates(item)
         for sku_variant in sku_variants:
             if sku_variant not in reference_candidates:
@@ -572,10 +665,25 @@ class NetoConnector(models.AbstractModel):
             return False, True
         return False, False
 
-    def _match_exact_stock_product(self, item):
+    def _match_exact_stock_product(self, store, item):
+        ProductLink = self.env['neto.product.link'].sudo()
+        neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
+        if neto_product_id:
+            link = ProductLink.search([
+                ('store_id', '=', store.id),
+                ('neto_product_id', '=', neto_product_id),
+            ], limit=1)
+            if link:
+                return link.product_id, False
         sku = (item.get('SKU') or '').strip()
         if not sku:
             return False, 'Skipped stock row without SKU'
+        link = ProductLink.search([
+            ('store_id', '=', store.id),
+            ('neto_sku', '=', sku),
+        ], limit=1)
+        if link:
+            return link.product_id, False
         Product = self.env['product.product'].sudo().with_context(active_test=False)
         products = Product.search([('default_code', '=', sku)])
         product, conflict = self._select_active_unique_match(products)
@@ -689,6 +797,56 @@ class NetoConnector(models.AbstractModel):
         })
         return template.product_variant_ids[:1], template
 
+    def _get_warehouse_quantity_json(self, item):
+        value = item.get('WarehouseQuantity')
+        if value in (None, '', []):
+            return False
+        try:
+            return json.dumps(value, sort_keys=True)
+        except TypeError:
+            return str(value)
+
+    def _prepare_product_link_values(self, store, product, item, reason=False):
+        return {
+            'product_id': product.id,
+            'store_id': store.id,
+            'neto_product_id': (item.get('ID') or item.get('InventoryID') or '').strip() or False,
+            'neto_sku': (item.get('SKU') or '').strip() or False,
+            'neto_barcode': _get_neto_individual_barcode(item) or False,
+            'neto_generic_barcode': _get_neto_generic_barcode(item) or False,
+            'neto_parent_sku': (item.get('ParentSKU') or '').strip() or False,
+            'neto_name': (item.get('Name') or '').strip() or False,
+            'neto_model': (item.get('Model') or '').strip() or False,
+            'neto_brand': (item.get('Brand') or '').strip() or False,
+            'is_active': self._is_neto_item_active(item),
+            'available_sell_quantity': self._get_neto_available_sell_quantity(item) or 0.0,
+            'warehouse_quantity_json': self._get_warehouse_quantity_json(item),
+            'last_sync_date': fields.Datetime.now(),
+            'last_sync_note': reason or False,
+        }
+
+    def _upsert_product_link(self, store, product, item, reason=False):
+        ProductLink = self.env['neto.product.link'].sudo()
+        neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
+        sku = (item.get('SKU') or '').strip()
+        link = False
+        if neto_product_id:
+            link = ProductLink.search([
+                ('store_id', '=', store.id),
+                ('neto_product_id', '=', neto_product_id),
+            ], limit=1)
+        if not link and sku:
+            link = ProductLink.search([
+                ('store_id', '=', store.id),
+                ('neto_sku', '=', sku),
+            ], limit=1)
+        values = self._prepare_product_link_values(store, product, item, reason=reason)
+        if link:
+            link.write(values)
+        else:
+            link = ProductLink.create(values)
+        return link
+
     def _prepare_product_write_values(self, store, item, price_values, action, reason=False, product=False):
         sku = (item.get('SKU') or '').strip()
         barcode = _get_neto_individual_barcode(item)
@@ -696,19 +854,33 @@ class NetoConnector(models.AbstractModel):
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
         parent_sku = (item.get('ParentSKU') or '').strip()
         values = {
-            'barcode': barcode or False,
             'recommended_retail_price': price_values['rrp_incl'],
             'standard_price': price_values['cost_price'],
-            'neto_product_id': neto_product_id or False,
-            'neto_store_id': store.id,
-            'neto_parent_sku': parent_sku or False,
             'neto_last_product_sync': fields.Datetime.now(),
             'neto_product_sync_state': action,
             'neto_product_sync_note': reason or False,
         }
-        if 'reza_generic_barcode' in self.env['product.product']._fields:
+        legacy_store = product.neto_store_id if product else False
+        can_write_legacy_store_fields = not product or not legacy_store or legacy_store == store
+        if can_write_legacy_store_fields:
+            values.update({
+                'neto_product_id': neto_product_id or False,
+                'neto_store_id': store.id,
+                'neto_parent_sku': parent_sku or False,
+            })
+            if not product or not product.barcode or legacy_store == store:
+                values['barcode'] = barcode or False
+        if (
+            can_write_legacy_store_fields
+            and 'reza_generic_barcode' in self.env['product.product']._fields
+            and (
+                not product
+                or not getattr(product, 'reza_generic_barcode', False)
+                or legacy_store == store
+            )
+        ):
             values['reza_generic_barcode'] = generic_barcode or False
-        if 'external_api_id' in self.env['product.product']._fields:
+        if can_write_legacy_store_fields and 'external_api_id' in self.env['product.product']._fields:
             values['external_api_id'] = int(neto_product_id) if neto_product_id.isdigit() else False
         # Preserve an existing Odoo internal reference on matched products.
         if not product or not product.default_code:
@@ -853,6 +1025,11 @@ class NetoConnector(models.AbstractModel):
             self._update_available_quantity_with_retry(store, product, location, delta)
         if update_neto_quantity and (not product.neto_store_id or product.neto_store_id == store):
             product.sudo().write({'neto_available_sell_quantity': qty})
+        link = self._upsert_product_link(store, product, item)
+        link.sudo().write({
+            'available_sell_quantity': qty,
+            'last_sync_date': fields.Datetime.now(),
+        })
         return True
 
     def _write_product_record(
@@ -881,6 +1058,7 @@ class NetoConnector(models.AbstractModel):
         product_values = self._prepare_product_write_values(
             store, item, price_values, action, reason=reason, product=product,
         )
+        link = self._upsert_product_link(store, product, item, reason=reason)
         try:
             product.sudo().write(product_values)
         except ValidationError as exc:
@@ -890,18 +1068,21 @@ class NetoConnector(models.AbstractModel):
             retry_reason = f'Barcode conflict on {barcode_value}; kept existing Odoo barcode'
             product_values['neto_product_sync_note'] = retry_reason
             product.sudo().write(product_values)
-            self._log_product_sync(store, item, 'skipped', product=product, reason=retry_reason)
+            link.write({'last_sync_note': retry_reason})
+            self._log_product_sync(store, item, 'skipped', product=product, link=link, reason=retry_reason)
         self._sync_pricelist_price(pricelist, product, price_values['sale_price'])
         if sync_stock:
             self._sync_stock_quantity(store, product, item)
         if self._is_global_store(store):
             self._set_pricing_review_tag(template)
+        return link
 
-    def _log_product_sync(self, store, item, action, product=False, reason=False):
+    def _log_product_sync(self, store, item, action, product=False, link=False, reason=False):
         values = {
             'store_id': store.id if store else False,
             'neto_sku': (item.get('SKU') or '').strip() if item else False,
             'neto_product_id': (item.get('ID') or item.get('InventoryID') or '').strip() if item else False,
+            'link_id': link.id if link else False,
             'product_id': product.id if product else False,
             'action': action,
             'reason': reason or False,
@@ -916,21 +1097,21 @@ class NetoConnector(models.AbstractModel):
         category = self._get_or_create_category(store, item)
         if product:
             template = product.product_tmpl_id
-            self._write_product_record(
+            link = self._write_product_record(
                 product, template, store, item, category, 'updated', sync_stock=sync_stock
             )
             matched_ids.add(product.id)
-            self._log_product_sync(store, item, 'updated', product=product)
+            self._log_product_sync(store, item, 'updated', product=product, link=link)
             return product
         product, template = self._get_or_create_product(store, item, category)
         if not product:
             self._log_product_sync(store, item, 'error', reason='Unable to create Odoo product')
             return False
-        self._write_product_record(
+        link = self._write_product_record(
             product, template, store, item, category, 'created', sync_stock=sync_stock
         )
         matched_ids.add(product.id)
-        self._log_product_sync(store, item, 'created', product=product)
+        self._log_product_sync(store, item, 'created', product=product, link=link)
         return product
 
     def _split_products(self, items):
@@ -1079,7 +1260,7 @@ class NetoConnector(models.AbstractModel):
         for item in items:
             try:
                 with self.env.cr.savepoint():
-                    product, reason = self._match_exact_stock_product(item)
+                    product, reason = self._match_exact_stock_product(store, item)
                     if not product:
                         skipped += 1
                         self._log_product_sync(store, item, 'skipped', reason=reason)
@@ -1158,11 +1339,42 @@ class NetoConnector(models.AbstractModel):
         return updated
 
     def _is_neto_linked_product(self, product):
+        if self.env['neto.product.link'].sudo().search([('product_id', '=', product.id)], limit=1):
+            return True
         if product.neto_product_id or product.neto_parent_sku or product.neto_store_id:
             return True
         if 'x_studio_neto_reference' in product._fields and product.x_studio_neto_reference:
             return True
         return False
+
+    def backfill_legacy_product_links(self):
+        Product = self.env['product.product'].sudo().with_context(active_test=False)
+        products = Product.search([
+            ('neto_store_id', '!=', False),
+            ('neto_product_id', '!=', False),
+        ])
+        updated = 0
+        for product in products:
+            item = {
+                'ID': product.neto_product_id or '',
+                'SKU': product.default_code or '',
+                'UPC': product.barcode or '',
+                'UPC1': getattr(product, 'reza_generic_barcode', False) or '',
+                'ParentSKU': product.neto_parent_sku or '',
+                'Name': product.display_name or product.name or '',
+                'AvailableSellQuantity': product.neto_available_sell_quantity,
+                'IsActive': 'True' if product.active else 'False',
+            }
+            link = self._upsert_product_link(
+                product.neto_store_id,
+                product,
+                item,
+                reason='Backfilled from legacy product Neto fields',
+            )
+            if product.neto_last_product_sync:
+                link.write({'last_sync_date': product.neto_last_product_sync})
+            updated += 1
+        return updated
 
     def run_product_stock_sync(self, store_ids=None):
         domain = [('active', '=', True)]
