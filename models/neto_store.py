@@ -9,7 +9,7 @@ class NetoStore(models.Model):
 
     name = fields.Char(string='Store Name', required=True)
     store_url = fields.Char(string='Store URL', required=True)
-    api_key = fields.Char(string='API Key', required=True, password=True)
+    api_key = fields.Char(string='API Key', required=True)
     active = fields.Boolean(string='Active', default=True)
     last_sync_date = fields.Datetime(string='Last Sync', readonly=True)
     last_rma_sync_date = fields.Datetime(string='Last RMA Sync', readonly=True)
