@@ -171,10 +171,28 @@ class SaleOrder(models.Model):
 
     def _get_neto_history_line_sku(self, line):
         product = line.product_id
+        if not product:
+            return ""
+        partner = (self.partner_id or self.commercial_partner_id).sudo()
+        barcode_rule = getattr(partner, "reza_invoice_barcode_rule", "individual")
+        if barcode_rule == "generic":
+            return (
+                self._get_neto_history_product_barcode(product, "reza_generic_barcode")
+                or self._get_neto_history_product_barcode(product, "barcode")
+                or product.default_code
+                or ""
+            )
         return (
-            product.barcode
-            or getattr(product, "reza_generic_barcode", False)
+            self._get_neto_history_product_barcode(product, "barcode")
             or product.default_code
+            or ""
+        )
+
+    def _get_neto_history_product_barcode(self, product, field_name):
+        product = product.sudo()
+        return (
+            getattr(product, field_name, False)
+            or getattr(product.product_tmpl_id.sudo(), field_name, False)
             or ""
         )
 
