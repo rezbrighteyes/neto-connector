@@ -92,7 +92,7 @@
                                 <th style="width: 55%; border: 1px solid #222; text-align: center; padding: 4px;">Contact</th>
                             </tr>
                             <tr>
-                                <td style="border: 1px solid #222; padding: 4px; min-height: 22px;"><span t-out="doc.neto_consignment_number or ''"/></td>
+                                <td style="border: 1px solid #222; padding: 4px; min-height: 22px; font-size: 11px;"><span t-out="doc.neto_consignment_number or ''"/></td>
                                 <td style="border: 1px solid #222; padding: 4px;"><span t-out="doc.client_order_ref or ''"/></td>
                                 <td style="border: 1px solid #222; padding: 4px;"></td>
                             </tr>
@@ -140,25 +140,6 @@
                             <tr>
                                 <td style="width: 55%; vertical-align: top; padding: 0 8px;">
                                     <p>Total QTY: <span t-out="doc._get_neto_history_total_quantity()"/></p>
-                                    <div t-if="doc._get_neto_history_payments()" style="margin-top: 22px;">
-                                        <h3 style="font-size: 16px; margin: 0 0 8px 0;">Order payment history</h3>
-                                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
-                                        <thead>
-                                            <tr>
-                                                <th style="text-align: left;">Date</th>
-                                                <th style="text-align: left;">Payment Method</th>
-                                                <th style="text-align: right;">Amount</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <tr t-foreach="doc._get_neto_history_payments()" t-as="payment">
-                                                <td><span t-field="payment.date_paid" t-options='{"widget": "date"}'/></td>
-                                                <td><span t-out="payment.payment_method_name or payment.payment_method or ''"/></td>
-                                                <td style="text-align: right;"><span t-out="doc._format_neto_history_money(payment.amount_paid)"/></td>
-                                            </tr>
-                                        </tbody>
-                                    </table>
-                                    </div>
                                 </td>
                                 <td style="width: 45%; vertical-align: top;">
                                     <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
@@ -213,6 +194,32 @@
                             <p style="margin: 0 0 8px 0;">BSB - Account No:</p>
                             <p style="margin: 0 0 12px 0;"><span t-out="doc._get_neto_history_bank_account()"/></p>
                             <p style="margin: 0;">Please quote your Customer Reference: <span t-out="doc.partner_id.ref or doc.neto_order_id"/></p>
+                        </div>
+
+                        <div t-if="doc._get_neto_history_payments()" style="margin-top: 16px; border: 1px solid #ddd; border-radius: 3px; font-size: 12px;">
+                            <div style="background: #f5f5f5; border-bottom: 1px solid #ddd; padding: 10px 12px;">
+                                <h3 style="font-size: 16px; font-weight: 400; margin: 0;">Order payment history</h3>
+                            </div>
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr>
+                                        <th style="text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd;">Date</th>
+                                        <th style="text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd;">Payment Method</th>
+                                        <th style="text-align: right; padding: 8px 10px; border-bottom: 1px solid #ddd;">Amount</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr t-foreach="doc._get_neto_history_payments()" t-as="payment">
+                                        <td style="padding: 8px 10px; border-bottom: 1px solid #eee;"><span t-field="payment.date_paid" t-options='{"widget": "date"}'/></td>
+                                        <td style="padding: 8px 10px; border-bottom: 1px solid #eee;"><span t-out="payment.payment_method_name or payment.payment_method or ''"/></td>
+                                        <td style="text-align: right; padding: 8px 10px; border-bottom: 1px solid #eee;"><span t-out="doc._format_neto_history_money(payment.amount_paid)"/></td>
+                                    </tr>
+                                    <tr>
+                                        <td colspan="2" style="text-align: right; padding: 8px 10px; font-weight: 700;">Amount Paid:</td>
+                                        <td style="text-align: right; padding: 8px 10px; font-weight: 700;"><span t-out="doc._format_neto_history_money(doc._get_neto_history_amount_paid())"/></td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </t>
