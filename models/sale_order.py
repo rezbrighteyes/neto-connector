@@ -142,6 +142,27 @@ class SaleOrder(models.Model):
         self.ensure_one()
         return "$%.2f" % (amount or 0.0)
 
+    def _get_neto_history_bank_deposit_label(self):
+        self.ensure_one()
+        bank = self.company_id.partner_id.bank_ids[:1]
+        bank_name = bank.bank_id.name if bank and bank.bank_id else ""
+        if bank_name:
+            return "Direct Bank Deposit into %s" % bank_name
+        return "Direct Bank Deposit"
+
+    def _get_neto_history_bank_account(self):
+        self.ensure_one()
+        company_key = "%s %s" % (
+            self.company_id.name or "",
+            self.company_id.vat or "",
+        )
+        if "44137818234" in company_key or "GLOBAL EYEWEAR" in company_key.upper():
+            return "084 004 - 895 054 818"
+        if "70115521821" in company_key or "LIAISE" in company_key.upper():
+            return "084 705 - 836 921 205"
+        bank = self.company_id.partner_id.bank_ids[:1]
+        return bank.acc_number if bank else ""
+
     def _get_neto_history_line_sku(self, line):
         product = line.product_id
         return (

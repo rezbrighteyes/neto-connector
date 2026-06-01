@@ -208,10 +208,10 @@
                         </table>
 
                         <div style="margin-top: 24px; font-size: 13px;" t-if="doc.company_id.partner_id.bank_ids">
-                            <p style="margin: 0 0 8px 0;">Direct Bank Deposit</p>
+                            <p style="margin: 0 0 8px 0;" t-out="doc._get_neto_history_bank_deposit_label()"/>
                             <p style="margin: 0 0 8px 0;"><strong t-out="doc.company_id.partner_id.bank_ids[0].acc_holder_name or doc.company_id.name"/></p>
                             <p style="margin: 0 0 8px 0;">BSB - Account No:</p>
-                            <p style="margin: 0 0 12px 0;"><span t-out="doc.company_id.partner_id.bank_ids[0].acc_number"/></p>
+                            <p style="margin: 0 0 12px 0;"><span t-out="doc._get_neto_history_bank_account()"/></p>
                             <p style="margin: 0;">Please quote your Customer Reference: <span t-out="doc.partner_id.ref or doc.neto_order_id"/></p>
                         </div>
                     </div>
