@@ -173,8 +173,7 @@ class SaleOrder(models.Model):
         product = line.product_id
         if not product:
             return ""
-        partner = (self.partner_id or self.commercial_partner_id).sudo()
-        barcode_rule = getattr(partner, "reza_invoice_barcode_rule", "individual")
+        barcode_rule = self._get_neto_history_invoice_barcode_rule()
         if barcode_rule == "generic":
             return (
                 self._get_neto_history_product_barcode(product, "reza_generic_barcode")
@@ -187,6 +186,25 @@ class SaleOrder(models.Model):
             or product.default_code
             or ""
         )
+
+    def _get_neto_history_invoice_barcode_rule(self):
+        self.ensure_one()
+        partners = (
+            self.partner_invoice_id
+            | self.partner_id
+            | self.partner_invoice_id.commercial_partner_id
+            | self.partner_id.commercial_partner_id
+            | self.commercial_partner_id
+        )
+        for partner in partners.filtered(bool):
+            rule = getattr(
+                partner.sudo().with_company(self.company_id),
+                "reza_invoice_barcode_rule",
+                False,
+            )
+            if rule:
+                return rule
+        return "individual"
 
     def _get_neto_history_product_barcode(self, product, field_name):
         product = product.sudo()
