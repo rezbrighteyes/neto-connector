@@ -90,7 +90,7 @@
                                     <td class="text-end">
                                         <span t-field="line.price_unit" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
                                     </td>
-                                    <td class="text-end"><span t-out="'%.0f%%' % (line.discount or 0.0)"/></td>
+                                    <td class="text-end"><span t-out="'%.0f' % (line.discount or 0.0) + '%'"/></td>
                                     <td class="text-end">
                                         <span t-out="line.price_unit * (1 - ((line.discount or 0.0) / 100.0))" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
                                     </td>

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Neto Order Sync for Odoo',
-    'version': '19.0.1.5.4',
+    'version': '19.0.1.5.5',
     'author': 'Reza Shiraz',
     'license': 'OPL-1',
     'category': 'Sales/Sales',
