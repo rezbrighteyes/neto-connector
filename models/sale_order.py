@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-from odoo import models, fields
+from odoo import _, fields, models
+from odoo.exceptions import UserError
+
+
+_NETO_SHIPPING_SKU = "NETO_SHIPPING"
+_NETO_SURCHARGE_SKU = "NETO_SURCHARGE"
 
 
 # ---------------------------------------------------------------------------
@@ -79,3 +84,112 @@ class SaleOrder(models.Model):
             order.neto_status_decoration = _STATUS_DECORATION.get(
                 order.neto_order_status or '', 'muted'
             )
+
+    def action_print_neto_history_tax_invoice(self):
+        self.ensure_one()
+        if not self._is_neto_history_tax_invoice_allowed():
+            raise UserError(_(
+                "Historical Tax Invoice can only be printed for Neto history "
+                "imports that have a Neto Order ID."
+            ))
+        return self.env.ref(
+            "Reza_neto_connector.action_report_neto_history_tax_invoice"
+        ).report_action(self)
+
+    def _is_neto_history_tax_invoice_allowed(self):
+        self.ensure_one()
+        return bool(self.neto_history_import and self.neto_order_id)
+
+    def _get_neto_history_product_lines(self):
+        self.ensure_one()
+        return self.order_line.filtered(
+            lambda line: (
+                not line.display_type
+                and line.state != "cancel"
+                and not self._is_neto_history_shipping_line(line)
+                and not self._is_neto_history_surcharge_line(line)
+            )
+        )
+
+    def _get_neto_history_shipping_lines(self):
+        self.ensure_one()
+        return self.order_line.filtered(self._is_neto_history_shipping_line)
+
+    def _get_neto_history_surcharge_lines(self):
+        self.ensure_one()
+        return self.order_line.filtered(self._is_neto_history_surcharge_line)
+
+    def _is_neto_history_shipping_line(self, line):
+        sku = (line.product_id.default_code or "").strip()
+        return bool(
+            not line.display_type
+            and line.state != "cancel"
+            and (getattr(line, "is_delivery", False) or sku == _NETO_SHIPPING_SKU)
+        )
+
+    def _is_neto_history_surcharge_line(self, line):
+        sku = (line.product_id.default_code or "").strip()
+        return bool(
+            not line.display_type
+            and line.state != "cancel"
+            and (
+                getattr(line, "is_reza_fuel_surcharge_line", False)
+                or sku == _NETO_SURCHARGE_SKU
+            )
+        )
+
+    def _get_neto_history_line_sku(self, line):
+        product = line.product_id
+        return (
+            product.barcode
+            or getattr(product, "reza_generic_barcode", False)
+            or product.default_code
+            or ""
+        )
+
+    def _get_neto_history_line_description(self, line):
+        return line.name or line.product_id.with_context(
+            display_default_code=False
+        ).display_name
+
+    def _get_neto_history_line_rrp(self, line):
+        return (
+            getattr(line, "recommended_retail_price", 0.0)
+            or getattr(line.product_id, "recommended_retail_price", 0.0)
+            or 0.0
+        )
+
+    def _get_neto_history_sales_subtotal(self):
+        self.ensure_one()
+        return sum(self._get_neto_history_product_lines().mapped("price_subtotal"))
+
+    def _get_neto_history_shipping_subtotal(self):
+        self.ensure_one()
+        return sum(self._get_neto_history_shipping_lines().mapped("price_subtotal"))
+
+    def _get_neto_history_surcharge_subtotal(self):
+        self.ensure_one()
+        return sum(self._get_neto_history_surcharge_lines().mapped("price_subtotal"))
+
+    def _get_neto_history_total_quantity(self):
+        self.ensure_one()
+        return int(round(sum(self._get_neto_history_product_lines().mapped("product_uom_qty"))))
+
+    def _get_neto_history_payments(self):
+        self.ensure_one()
+        Payment = self.env["neto.payment"].sudo()
+        payments = Payment.search([("sale_order_id", "=", self.id)])
+        if not payments and self.neto_order_id:
+            payments = Payment.search([
+                ("neto_order_id", "=", self.neto_order_id),
+                ("company_id", "=", self.company_id.id),
+            ])
+        return payments
+
+    def _get_neto_history_amount_paid(self):
+        self.ensure_one()
+        return sum(self._get_neto_history_payments().mapped("amount_paid"))
+
+    def _get_neto_history_amount_owed(self):
+        self.ensure_one()
+        return self.amount_total - self._get_neto_history_amount_paid()

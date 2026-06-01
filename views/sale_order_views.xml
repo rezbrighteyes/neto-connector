@@ -9,6 +9,7 @@
         <field name="arch" type="xml">
             <!-- Neto badges inside the header statusbar -->
             <xpath expr="//header" position="inside">
+                <field name="neto_history_import" invisible="1"/>
 
                 <!-- Neto Order ID badge (always blue when present) -->
                 <field name="neto_order_id"
@@ -42,6 +43,12 @@
                        widget="badge"
                        decoration-warning="neto_internal_label == 'Internal'"
                        string=""/>
+
+                <button name="action_print_neto_history_tax_invoice"
+                        type="object"
+                        string="Historical Tax Invoice"
+                        class="btn-secondary"
+                        invisible="not neto_history_import or not neto_order_id"/>
 
             </xpath>
 

@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_report_neto_history_tax_invoice" model="ir.actions.report">
+        <field name="name">Historical Tax Invoice</field>
+        <field name="model">sale.order</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">Reza_neto_connector.report_neto_history_tax_invoice</field>
+        <field name="report_file">Reza_neto_connector.report_neto_history_tax_invoice</field>
+        <field name="print_report_name">'Historical Tax Invoice - %s' % (object.neto_order_id or object.name)</field>
+    </record>
+
+    <template id="report_neto_history_tax_invoice">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="doc">
+                <t t-if="doc._is_neto_history_tax_invoice_allowed()">
+                    <div class="page" style="font-size: 12px;">
+                        <div class="row mb-3">
+                            <div class="col-6">
+                                <img
+                                    t-if="doc.company_id.logo"
+                                    t-att-src="image_data_uri(doc.company_id.logo)"
+                                    style="max-height: 70px; max-width: 180px; margin-bottom: 8px;"
+                                />
+                                <h3 style="margin: 0 0 6px 0;" t-out="doc.company_id.name"/>
+                                <div t-field="doc.company_id.partner_id" t-options='{"widget": "contact", "fields": ["address"], "no_marker": True}'/>
+                                <div t-if="doc.company_id.phone">Phone: <span t-out="doc.company_id.phone"/></div>
+                                <div t-if="doc.company_id.vat">ABN#: <span t-out="doc.company_id.vat"/></div>
+                            </div>
+                            <div class="col-6">
+                                <table class="table table-sm table-borderless" style="width: 100%;">
+                                    <tbody>
+                                        <tr>
+                                            <th colspan="2" class="text-center">
+                                                <h3 style="font-weight: bold;">Tax Invoice</h3>
+                                            </th>
+                                        </tr>
+                                        <tr>
+                                            <th class="text-end">Reference Nbr.:</th>
+                                            <td class="text-end"><span t-out="doc.neto_order_id or doc.name"/></td>
+                                        </tr>
+                                        <tr>
+                                            <th class="text-end">Date:</th>
+                                            <td class="text-end"><span t-field="doc.date_order" t-options='{"widget": "date"}'/></td>
+                                        </tr>
+                                        <tr t-if="doc.partner_id.ref">
+                                            <th class="text-end">Customer ID:</th>
+                                            <td class="text-end"><span t-out="doc.partner_id.ref"/></td>
+                                        </tr>
+                                        <tr>
+                                            <th class="text-end">Currency:</th>
+                                            <td class="text-end"><span t-out="doc.currency_id.name"/></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-6">
+                                <strong>Invoice to:</strong>
+                                <div t-field="doc.partner_invoice_id" t-options='{"widget": "contact", "fields": ["address", "name"], "no_marker": True}'/>
+                            </div>
+                            <div class="col-6">
+                                <strong>Deliver to:</strong>
+                                <div t-field="doc.partner_shipping_id" t-options='{"widget": "contact", "fields": ["address", "name", "phone"], "no_marker": True}'/>
+                            </div>
+                        </div>
+
+                        <table class="table table-sm" style="width: 100%; font-size: 11px;">
+                            <thead>
+                                <tr>
+                                    <th>Item No</th>
+                                    <th>Description</th>
+                                    <th class="text-end">Unit QTY</th>
+                                    <th class="text-end">Unit RRP</th>
+                                    <th class="text-end">Unit Price ex GST</th>
+                                    <th class="text-end">Disc</th>
+                                    <th class="text-end">Unit Price after Disc</th>
+                                    <th class="text-end">TOTAL ex GST</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr t-foreach="doc._get_neto_history_product_lines()" t-as="line">
+                                    <td><span t-out="doc._get_neto_history_line_sku(line)"/></td>
+                                    <td><span t-out="doc._get_neto_history_line_description(line)"/></td>
+                                    <td class="text-end"><span t-out="'%.0f' % line.product_uom_qty"/></td>
+                                    <td class="text-end">
+                                        <span t-out="doc._get_neto_history_line_rrp(line)" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    </td>
+                                    <td class="text-end">
+                                        <span t-field="line.price_unit" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    </td>
+                                    <td class="text-end"><span t-out="'%.0f%%' % (line.discount or 0.0)"/></td>
+                                    <td class="text-end">
+                                        <span t-out="line.price_unit * (1 - ((line.discount or 0.0) / 100.0))" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    </td>
+                                    <td class="text-end">
+                                        <span t-field="line.price_subtotal" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="row mt-2">
+                            <div class="col-6">
+                                <p>Total QTY: <span t-out="doc._get_neto_history_total_quantity()"/></p>
+                                <div t-if="doc._get_neto_history_payments()">
+                                    <h5>Order payment history</h5>
+                                    <table class="table table-sm" style="font-size: 11px;">
+                                        <thead>
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Payment Method</th>
+                                                <th class="text-end">Amount</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr t-foreach="doc._get_neto_history_payments()" t-as="payment">
+                                                <td><span t-field="payment.date_paid" t-options='{"widget": "date"}'/></td>
+                                                <td><span t-out="payment.payment_method_name or payment.payment_method or ''"/></td>
+                                                <td class="text-end"><span t-field="payment.amount_paid"/></td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <table class="table table-sm table-borderless" style="width: 100%;">
+                                    <tbody>
+                                        <tr t-if="doc._get_neto_history_shipping_subtotal()">
+                                            <th>Shipping (ex GST):</th>
+                                            <td class="text-end">
+                                                <span t-out="doc._get_neto_history_shipping_subtotal()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th>Sales Total (ex GST):</th>
+                                            <td class="text-end">
+                                                <span t-out="doc._get_neto_history_sales_subtotal()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            </td>
+                                        </tr>
+                                        <tr t-if="doc._get_neto_history_surcharge_subtotal()">
+                                            <th>Fuel Surcharge (ex GST):</th>
+                                            <td class="text-end">
+                                                <span t-out="doc._get_neto_history_surcharge_subtotal()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th>GST Total:</th>
+                                            <td class="text-end"><span t-field="doc.amount_tax"/></td>
+                                        </tr>
+                                        <tr>
+                                            <th><b>Total (<span t-out="doc.currency_id.name"/>):</b></th>
+                                            <td class="text-end"><b><span t-field="doc.amount_total"/></b></td>
+                                        </tr>
+                                        <tr>
+                                            <th>Amount Paid:</th>
+                                            <td class="text-end">
+                                                <span t-out="doc._get_neto_history_amount_paid()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th>Amount Owed:</th>
+                                            <td class="text-end">
+                                                <span t-out="doc._get_neto_history_amount_owed()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="mt-3" t-if="doc.company_id.partner_id.bank_ids">
+                            <p class="mb-1">Direct Bank Deposit</p>
+                            <p class="mb-1"><strong t-out="doc.company_id.partner_id.bank_ids[0].acc_holder_name or doc.company_id.name"/></p>
+                            <p class="mb-1">BSB - Account No:</p>
+                            <p class="mb-1"><span t-out="doc.company_id.partner_id.bank_ids[0].acc_number"/></p>
+                            <p class="mb-1">Please quote your Customer Reference: <span t-out="doc.partner_id.ref or doc.neto_order_id"/></p>
+                        </div>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+</odoo>
