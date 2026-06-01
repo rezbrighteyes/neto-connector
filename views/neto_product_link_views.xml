@@ -62,33 +62,10 @@
         </field>
     </record>
 
-    <record id="neto_product_link_view_search" model="ir.ui.view">
-        <field name="name">neto.product.link.search</field>
-        <field name="model">neto.product.link</field>
-        <field name="arch" type="xml">
-            <search string="Neto Product Links">
-                <field name="store_id"/>
-                <field name="company_id"/>
-                <field name="product_id"/>
-                <field name="neto_sku"/>
-                <field name="neto_product_id"/>
-                <field name="neto_barcode"/>
-                <filter name="active" string="Active" domain="[('is_active', '=', True)]"/>
-                <filter name="inactive" string="Inactive" domain="[('is_active', '=', False)]"/>
-                <group expand="0" string="Group By">
-                    <filter name="group_store" string="Store" context="{'group_by': 'store_id'}"/>
-                    <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
-                    <filter name="group_product" string="Odoo Product" context="{'group_by': 'product_id'}"/>
-                </group>
-            </search>
-        </field>
-    </record>
-
     <record id="neto_product_link_action" model="ir.actions.act_window">
         <field name="name">Product Links</field>
         <field name="res_model">neto.product.link</field>
         <field name="view_mode">list,form</field>
-        <field name="search_view_id" ref="neto_product_link_view_search"/>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">
                 No Neto product links yet.
