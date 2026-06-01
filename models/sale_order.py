@@ -179,9 +179,20 @@ class SaleOrder(models.Model):
         )
 
     def _get_neto_history_line_description(self, line):
-        return line.name or line.product_id.with_context(
+        product = line.product_id
+        product_description = product.with_context(
             display_default_code=False
-        ).display_name
+        ).display_name if product else ""
+        line_description = (line.name or "").strip()
+        if (
+            product_description
+            and (
+                not line_description
+                or line_description == (product.name or "").strip()
+            )
+        ):
+            return product_description
+        return line_description or product_description
 
     def _get_neto_history_line_rrp(self, line):
         return (

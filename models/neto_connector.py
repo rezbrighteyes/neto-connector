@@ -1451,13 +1451,14 @@ class NetoConnector(models.AbstractModel):
                 percent_discount = round(product_discount_amt / line_total_incl * 100, 4)
 
         try:
+            line_description = product.with_context(display_default_code=False).display_name
             order_line = self.env['sale.order.line'].sudo().create({
                 'order_id': order.id,
                 'product_id': product.id,
                 'product_uom_qty': qty,
                 'price_unit': neto_price_excl,
                 'discount': percent_discount,
-                'name': product.name,
+                'name': line_description,
                 'product_uom_id': product.uom_id.id,
             })
         except Exception as line_exc:
