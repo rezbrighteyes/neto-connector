@@ -28,7 +28,7 @@
         <field name="code">env['neto.connector'].run_product_stock_sync()</field>
         <field name="interval_number">15</field>
         <field name="interval_type">minutes</field>
-        <field name="active" eval="True"/>
+        <field name="active" eval="False"/>
     </record>
 
     <record id="ir_cron_neto_history_import_jobs" model="ir.cron">

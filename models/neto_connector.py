@@ -477,13 +477,24 @@ class NetoConnector(models.AbstractModel):
                         'creating [NETO-UNSYNCED] placeholder to preserve the order line',
                         sku,
                     )
-            neto_barcode = (item.get('UPC') or item.get('UPC1') or '').strip()
+            neto_barcode = (item.get('UPC') or '').strip()
             if neto_barcode:
                 product = Product.search([('barcode', '=', neto_barcode)], limit=1)
                 if product:
                     _logger.info(
                         'Neto sync: SKU=%s matched existing product "%s" via barcode %s',
                         sku, product.name, neto_barcode,
+                    )
+                    return product, False
+            neto_generic_barcode = (item.get('UPC1') or '').strip()
+            if neto_generic_barcode and 'reza_generic_barcode' in Product._fields:
+                product = Product.search([
+                    ('reza_generic_barcode', '=', neto_generic_barcode),
+                ], limit=2)
+                if len(product) == 1:
+                    _logger.info(
+                        'Neto sync: SKU=%s matched existing product "%s" via generic barcode %s',
+                        sku, product.name, neto_generic_barcode,
                     )
                     return product, False
 
@@ -521,8 +532,10 @@ class NetoConnector(models.AbstractModel):
             cost_price = round(float(item.get('CostPrice') or 0), 4)
 
         barcode = None
+        generic_barcode = None
         if item:
-            barcode = (item.get('UPC') or item.get('UPC1') or '').strip() or None
+            barcode = (item.get('UPC') or '').strip() or None
+            generic_barcode = (item.get('UPC1') or '').strip() or None
 
         weight = 0.0
         if item:
@@ -542,6 +555,8 @@ class NetoConnector(models.AbstractModel):
         }
         if barcode:
             vals['barcode'] = barcode
+        if generic_barcode and 'reza_generic_barcode' in Product._fields:
+            vals['reza_generic_barcode'] = generic_barcode
         if weight:
             vals['weight'] = weight
 

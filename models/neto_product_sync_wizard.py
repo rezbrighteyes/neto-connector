@@ -15,7 +15,7 @@ class NetoProductSyncWizard(models.TransientModel):
     )
     import_active_products = fields.Boolean(string='Import Active Products', default=True)
     import_inactive_products = fields.Boolean(string='Import Inactive Products', default=False)
-    update_stock_quantity = fields.Boolean(string='Update Stock Quantity', default=True)
+    update_stock_quantity = fields.Boolean(string='Update Stock Quantity', default=False)
 
     def action_run_product_sync(self):
         self.ensure_one()
@@ -27,7 +27,7 @@ class NetoProductSyncWizard(models.TransientModel):
             store_ids=store_ids,
             include_active=self.import_active_products,
             include_inactive=self.import_inactive_products,
-            sync_stock=self.update_stock_quantity,
+            sync_stock=False,
         )
 
         domain = []

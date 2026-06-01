@@ -10,7 +10,6 @@
                     <field name="store_id"/>
                     <field name="import_active_products"/>
                     <field name="import_inactive_products"/>
-                    <field name="update_stock_quantity"/>
                 </group>
                 <footer>
                     <button name="action_run_product_sync"

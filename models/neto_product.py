@@ -97,6 +97,30 @@ def _normalize_identifier(value):
     return _strip_leading_zeroes(value)
 
 
+def _get_neto_individual_barcode(item):
+    return (item.get('UPC') or '').strip()
+
+
+def _get_neto_generic_barcode(item):
+    return (item.get('UPC1') or '').strip()
+
+
+def _get_neto_reference_candidates(item):
+    values = []
+    for raw in (
+        item.get('SKU'),
+        _get_neto_individual_barcode(item),
+        _get_neto_generic_barcode(item),
+    ):
+        raw = (raw or '').strip()
+        if raw and raw != '0' and raw not in values:
+            values.append(raw)
+        normalized = _strip_leading_zeroes(raw)
+        if normalized and normalized != '0' and normalized not in values:
+            values.append(normalized)
+    return values
+
+
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
@@ -440,14 +464,26 @@ class NetoConnector(models.AbstractModel):
 
     def _get_barcode_candidates(self, item):
         values = []
-        for key in ('UPC', 'UPC1'):
-            raw = (item.get(key) or '').strip()
+        for raw in (_get_neto_individual_barcode(item), _get_neto_generic_barcode(item)):
             if raw and raw != '0':
                 values.append(raw)
                 normalized = _strip_leading_zeroes(raw)
                 if normalized and normalized != '0' and normalized not in values:
                     values.append(normalized)
         return values
+
+    def _get_barcode_match_domains(self, Product, item):
+        domains = []
+        individual_barcode = _get_neto_individual_barcode(item)
+        generic_barcode = _get_neto_generic_barcode(item)
+        for barcode in (individual_barcode, _strip_leading_zeroes(individual_barcode)):
+            if barcode and barcode != '0':
+                domains.append(('barcode', barcode))
+        if 'reza_generic_barcode' in Product._fields:
+            for barcode in (generic_barcode, _strip_leading_zeroes(generic_barcode)):
+                if barcode and barcode != '0':
+                    domains.append(('reza_generic_barcode', barcode))
+        return list(dict.fromkeys(domains))
 
     def _select_barcode_match(self, products):
         if not products:
@@ -459,16 +495,16 @@ class NetoConnector(models.AbstractModel):
             return products, False
         return False, True
 
-    def _match_by_barcode_candidates(self, Product, barcode_candidates):
-        for barcode in barcode_candidates:
-            products = Product.search([('barcode', '=', barcode)])
+    def _match_by_barcode_candidates(self, Product, barcode_domains):
+        for field_name, barcode in barcode_domains:
+            products = Product.search([(field_name, '=', barcode)])
             matched, conflict = self._select_barcode_match(products)
             if matched:
                 return matched, False
             if conflict:
                 _logger.info(
-                    'Neto product sync: ignoring shared barcode %s matched to %d product(s)',
-                    barcode, len(products),
+                    'Neto product sync: ignoring shared %s %s matched to %d product(s)',
+                    field_name, barcode, len(products),
                 )
         return False, False
 
@@ -485,8 +521,12 @@ class NetoConnector(models.AbstractModel):
             ], limit=1)
             if product:
                 return product, False
+        reference_candidates = _get_neto_reference_candidates(item)
         for sku_variant in sku_variants:
-            products = Product.search([('default_code', '=', sku_variant)])
+            if sku_variant not in reference_candidates:
+                reference_candidates.append(sku_variant)
+        for reference in reference_candidates:
+            products = Product.search([('default_code', '=', reference)])
             matched, conflict = self._select_active_unique_match(products)
             if matched:
                 return matched, False
@@ -500,9 +540,9 @@ class NetoConnector(models.AbstractModel):
                     return matched, False
                 if conflict:
                     saw_ambiguous_sku_match = True
-        barcode_candidates = self._get_barcode_candidates(item)
-        if barcode_candidates:
-            matched, conflict = self._match_by_barcode_candidates(Product, barcode_candidates)
+        barcode_domains = self._get_barcode_match_domains(Product, item)
+        if barcode_domains:
+            matched, conflict = self._match_by_barcode_candidates(Product, barcode_domains)
             if matched:
                 return matched, False
             if conflict:
@@ -630,7 +670,8 @@ class NetoConnector(models.AbstractModel):
 
     def _prepare_product_write_values(self, store, item, price_values, action, reason=False, product=False):
         sku = (item.get('SKU') or '').strip()
-        barcode = next((value for value in self._get_barcode_candidates(item) if value), False)
+        barcode = _get_neto_individual_barcode(item)
+        generic_barcode = _get_neto_generic_barcode(item)
         neto_product_id = (item.get('ID') or item.get('InventoryID') or '').strip()
         parent_sku = (item.get('ParentSKU') or '').strip()
         values = {
@@ -644,6 +685,8 @@ class NetoConnector(models.AbstractModel):
             'neto_product_sync_state': action,
             'neto_product_sync_note': reason or False,
         }
+        if 'reza_generic_barcode' in self.env['product.product']._fields:
+            values['reza_generic_barcode'] = generic_barcode or False
         # Preserve an existing Odoo internal reference on matched products.
         if not product or not product.default_code:
             values['default_code'] = sku or False
@@ -883,6 +926,7 @@ class NetoConnector(models.AbstractModel):
         signatures = {
             'neto_ids': set(),
             'skus': set(),
+            'references': set(),
             'barcodes': set(),
         }
         for item in items:
@@ -892,6 +936,8 @@ class NetoConnector(models.AbstractModel):
                 signatures['neto_ids'].add(neto_id)
             if sku:
                 signatures['skus'].add(sku)
+            for reference in _get_neto_reference_candidates(item):
+                signatures['references'].add(reference)
             for barcode in self._get_barcode_candidates(item):
                 if barcode:
                     signatures['barcodes'].add(barcode)
@@ -928,7 +974,7 @@ class NetoConnector(models.AbstractModel):
             }
             if product.neto_product_id and product.neto_product_id in signatures.get('neto_ids', set()):
                 continue
-            if product.default_code and product.default_code in signatures.get('skus', set()):
+            if product.default_code and product.default_code in signatures.get('references', set()):
                 continue
             if 'x_studio_neto_reference' in product._fields:
                 ref_value = (product.x_studio_neto_reference or '').strip()
@@ -947,7 +993,7 @@ class NetoConnector(models.AbstractModel):
                 'neto_product_sync_note': reason,
             })
 
-    def _sync_product_store(self, store, include_active=True, include_inactive=False, sync_stock=True):
+    def _sync_product_store(self, store, include_active=True, include_inactive=False, sync_stock=False):
         if not store.api_key or not store.store_url:
             _logger.warning(
                 'Neto product sync: store "%s" missing api_key or store_url — skipping.',
@@ -1114,7 +1160,7 @@ class NetoConnector(models.AbstractModel):
                 )
 
     def run_product_sync(
-        self, store_ids=None, include_active=True, include_inactive=False, sync_stock=True
+        self, store_ids=None, include_active=True, include_inactive=False, sync_stock=False
     ):
         domain = [('active', '=', True)]
         if store_ids:
