@@ -89,6 +89,7 @@ GET_ORDER_OUTPUT_SELECTOR = [
     'OrderLine.ProductName', 'OrderLine.UnitPrice',
     'OrderLine.Quantity', 'OrderLine.PercentDiscount',
     'OrderLine.ProductDiscount',
+    'OrderLine.ShippingTracking',
     'DatePlaced', 'DateUpdated',
     'DatePaid',
 ]
@@ -234,6 +235,19 @@ class NetoConnector(models.AbstractModel):
                 added.append(shipping_line)
 
         return added
+
+    def _get_consignment_number_from_order(self, order_data):
+        raw_lines = order_data.get('OrderLine', [])
+        if isinstance(raw_lines, dict):
+            raw_lines = [raw_lines]
+        tracking_numbers = []
+        seen = set()
+        for line in raw_lines or []:
+            tracking = (line.get('ShippingTracking') or '').strip()
+            if tracking and tracking not in seen:
+                tracking_numbers.append(tracking)
+                seen.add(tracking)
+        return ', '.join(tracking_numbers)
 
     # -------------------------------------------------------------------------
     # Payment helpers — read from OrderPayment block in GetOrder response
@@ -1199,6 +1213,7 @@ class NetoConnector(models.AbstractModel):
             'partner_shipping_id':  ship_partner.id,
             'neto_order_id':        order_id,
             'neto_order_status':    order_status,
+            'neto_consignment_number': self._get_consignment_number_from_order(order_data),
             'neto_internal':        neto_internal,
             'neto_history_import':  import_as_history,
             'date_order':           date_order,

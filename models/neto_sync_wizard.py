@@ -162,6 +162,9 @@ class NetoSyncWizard(models.TransientModel):
         )
 
         write_vals = {}
+        consignment_number = connector._get_consignment_number_from_order(order_data)
+        if consignment_number and 'neto_consignment_number' in self.env['sale.order']._fields:
+            write_vals['neto_consignment_number'] = consignment_number
         if date_paid and 'neto_date_paid' in self.env['sale.order']._fields:
             write_vals['neto_date_paid'] = date_paid
         if payment_method and 'neto_payment_method' in self.env['sale.order']._fields:

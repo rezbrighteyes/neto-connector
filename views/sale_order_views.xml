@@ -56,6 +56,8 @@
             <group name="sales_person" position="inside">
                 <field name="neto_order_id"        readonly="1" string="Neto Order ID"/>
                 <field name="neto_order_status"    readonly="1" string="Neto Status"/>
+                <field name="neto_consignment_number" readonly="1" string="Neto Consignment"
+                       invisible="not neto_consignment_number"/>
                 <field name="neto_internal"         readonly="1" string="Internal Order"/>
                 <field name="neto_date_paid"        readonly="1" string="Date Paid"
                        invisible="not neto_date_paid"/>

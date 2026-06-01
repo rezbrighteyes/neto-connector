@@ -92,7 +92,7 @@
                                 <th style="width: 55%; border: 1px solid #222; text-align: center; padding: 4px;">Contact</th>
                             </tr>
                             <tr>
-                                <td style="border: 1px solid #222; padding: 4px; min-height: 22px;"></td>
+                                <td style="border: 1px solid #222; padding: 4px; min-height: 22px;"><span t-out="doc.neto_consignment_number or ''"/></td>
                                 <td style="border: 1px solid #222; padding: 4px;"><span t-out="doc.client_order_ref or ''"/></td>
                                 <td style="border: 1px solid #222; padding: 4px;"></td>
                             </tr>

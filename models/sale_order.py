@@ -4,7 +4,7 @@ from odoo.exceptions import UserError
 
 
 _NETO_SHIPPING_SKU = "NETO_SHIPPING"
-_NETO_SURCHARGE_SKU = "NETO_SURCHARGE"
+_NETO_SURCHARGE_SKU = "NETO-SURCHARGE"
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,12 @@ class SaleOrder(models.Model):
     )
     neto_order_status = fields.Char(
         string='Neto Status', copy=False, readonly=True,
+    )
+    neto_consignment_number = fields.Char(
+        string='Neto Consignment Number',
+        copy=False,
+        readonly=True,
+        help='Tracking / consignment number returned by Neto order lines.',
     )
     neto_date_paid = fields.Datetime(
         string='Neto Date Paid', copy=False, readonly=True,
