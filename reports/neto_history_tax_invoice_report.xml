@@ -1,11 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <record id="paperformat_neto_history_tax_invoice" model="report.paperformat">
+        <field name="name">Neto History Tax Invoice</field>
+        <field name="default" eval="False"/>
+        <field name="format">A4</field>
+        <field name="orientation">Portrait</field>
+        <field name="margin_top">8</field>
+        <field name="margin_bottom">8</field>
+        <field name="margin_left">10</field>
+        <field name="margin_right">10</field>
+        <field name="header_line" eval="False"/>
+        <field name="header_spacing">0</field>
+        <field name="dpi">90</field>
+    </record>
+
     <record id="action_report_neto_history_tax_invoice" model="ir.actions.report">
         <field name="name">Historical Tax Invoice</field>
         <field name="model">sale.order</field>
         <field name="report_type">qweb-pdf</field>
         <field name="report_name">Reza_neto_connector.report_neto_history_tax_invoice</field>
         <field name="report_file">Reza_neto_connector.report_neto_history_tax_invoice</field>
+        <field name="paperformat_id" ref="Reza_neto_connector.paperformat_neto_history_tax_invoice"/>
         <field name="print_report_name">'Historical Tax Invoice - %s' % (object.neto_order_id or object.name)</field>
     </record>
 
@@ -13,169 +28,191 @@
         <t t-call="web.html_container">
             <t t-foreach="docs" t-as="doc">
                 <t t-if="doc._is_neto_history_tax_invoice_allowed()">
-                    <div class="page" style="font-size: 12px;">
-                        <div class="row mb-3">
-                            <div class="col-6">
-                                <img
-                                    t-if="doc.company_id.logo"
-                                    t-att-src="image_data_uri(doc.company_id.logo)"
-                                    style="max-height: 70px; max-width: 180px; margin-bottom: 8px;"
-                                />
-                                <h3 style="margin: 0 0 6px 0;" t-out="doc.company_id.name"/>
-                                <div t-field="doc.company_id.partner_id" t-options='{"widget": "contact", "fields": ["address"], "no_marker": True}'/>
-                                <div t-if="doc.company_id.phone">Phone: <span t-out="doc.company_id.phone"/></div>
-                                <div t-if="doc.company_id.vat">ABN#: <span t-out="doc.company_id.vat"/></div>
-                            </div>
-                            <div class="col-6">
-                                <table class="table table-sm table-borderless" style="width: 100%;">
-                                    <tbody>
+                    <div class="page" style="font-family: Arial, sans-serif; font-size: 13px; line-height: 1.25; color: #000;">
+                        <table style="width: 100%; border-collapse: collapse; margin-bottom: 18px;">
+                            <tr>
+                                <td style="width: 48%; vertical-align: top;">
+                                    <img
+                                        t-if="doc.company_id.logo"
+                                        t-att-src="image_data_uri(doc.company_id.logo)"
+                                        style="max-height: 58px; max-width: 170px; margin-bottom: 10px;"
+                                    />
+                                    <h1 style="font-size: 26px; font-weight: 400; margin: 0 0 28px 0;" t-out="doc.company_id.name"/>
+                                    <div t-out="doc.company_id.street or ''"/>
+                                    <div>
+                                        <span t-out="doc.company_id.city or ''"/>
+                                        <span t-if="doc.company_id.state_id">, <span t-out="doc.company_id.state_id.code or doc.company_id.state_id.name"/></span>
+                                        <span t-if="doc.company_id.zip"> <span t-out="doc.company_id.zip"/></span>
+                                        <span t-if="doc.company_id.country_id">, <span t-out="doc.company_id.country_id.code or doc.company_id.country_id.name"/></span>
+                                    </div>
+                                    <div>Phone: <span t-out="doc.company_id.phone or ''"/></div>
+                                    <div t-if="doc.company_id.vat">ABN#: <span t-out="doc.company_id.vat"/></div>
+                                </td>
+                                <td style="width: 52%; vertical-align: top; text-align: right;">
+                                    <h2 style="font-size: 24px; font-weight: 700; margin: 12px 0 18px 0;">Tax Invoice</h2>
+                                    <table style="width: 72%; margin-left: auto; border-collapse: collapse; font-size: 13px;">
                                         <tr>
-                                            <th colspan="2" class="text-center">
-                                                <h3 style="font-weight: bold;">Tax Invoice</h3>
-                                            </th>
+                                            <th style="text-align: right; padding: 1px 8px 1px 0;">Reference Nbr.:</th>
+                                            <td style="text-align: right; padding: 1px 0;"><span t-out="doc.neto_order_id or doc.name"/></td>
                                         </tr>
                                         <tr>
-                                            <th class="text-end">Reference Nbr.:</th>
-                                            <td class="text-end"><span t-out="doc.neto_order_id or doc.name"/></td>
-                                        </tr>
-                                        <tr>
-                                            <th class="text-end">Date:</th>
-                                            <td class="text-end"><span t-field="doc.date_order" t-options='{"widget": "date"}'/></td>
+                                            <th style="text-align: right; padding: 1px 8px 1px 0;">Date:</th>
+                                            <td style="text-align: right; padding: 1px 0;"><span t-field="doc.date_order" t-options='{"widget": "date"}'/></td>
                                         </tr>
                                         <tr t-if="doc.partner_id.ref">
-                                            <th class="text-end">Customer ID:</th>
-                                            <td class="text-end"><span t-out="doc.partner_id.ref"/></td>
+                                            <th style="text-align: right; padding: 1px 8px 1px 0;">Customer ID:</th>
+                                            <td style="text-align: right; padding: 1px 0;"><span t-out="doc.partner_id.ref"/></td>
                                         </tr>
                                         <tr>
-                                            <th class="text-end">Currency:</th>
-                                            <td class="text-end"><span t-out="doc.currency_id.name"/></td>
+                                            <th style="text-align: right; padding: 1px 8px 1px 0;">Currency:</th>
+                                            <td style="text-align: right; padding: 1px 0;"><span t-out="doc.currency_id.name"/></td>
                                         </tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
 
-                        <div class="row mb-3">
-                            <div class="col-6">
-                                <strong>Invoice to:</strong>
-                                <div t-field="doc.partner_invoice_id" t-options='{"widget": "contact", "fields": ["address", "name"], "no_marker": True}'/>
-                            </div>
-                            <div class="col-6">
-                                <strong>Deliver to:</strong>
-                                <div t-field="doc.partner_shipping_id" t-options='{"widget": "contact", "fields": ["address", "name", "phone"], "no_marker": True}'/>
-                            </div>
-                        </div>
+                        <table style="width: 100%; border-collapse: collapse; margin-bottom: 18px;">
+                            <tr>
+                                <td style="width: 50%; vertical-align: top; padding-left: 72px;">
+                                    <p style="margin: 0 0 12px 0;">Invoice to:</p>
+                                    <div t-field="doc.partner_invoice_id" t-options='{"widget": "contact", "fields": ["address", "name"], "no_marker": True}'/>
+                                </td>
+                                <td style="width: 50%; vertical-align: top; padding-left: 40px;">
+                                    <p style="margin: 0 0 12px 0;">Deliver to:</p>
+                                    <div t-field="doc.partner_shipping_id" t-options='{"widget": "contact", "fields": ["address", "name", "phone"], "no_marker": True}'/>
+                                </td>
+                            </tr>
+                        </table>
 
-                        <table class="table table-sm" style="width: 100%; font-size: 11px;">
+                        <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin: 6px 0 28px 0;">
+                            <tr>
+                                <th style="width: 25%; border: 1px solid #222; text-align: center; padding: 4px;">Consignment Note</th>
+                                <th style="width: 20%; border: 1px solid #222; text-align: center; padding: 4px;">Customer PO</th>
+                                <th style="width: 55%; border: 1px solid #222; text-align: center; padding: 4px;">Contact</th>
+                            </tr>
+                            <tr>
+                                <td style="border: 1px solid #222; padding: 4px; min-height: 22px;"></td>
+                                <td style="border: 1px solid #222; padding: 4px;"><span t-out="doc.client_order_ref or ''"/></td>
+                                <td style="border: 1px solid #222; padding: 4px;"></td>
+                            </tr>
+                        </table>
+
+                        <table style="width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px;">
                             <thead>
                                 <tr>
-                                    <th>Item No</th>
-                                    <th>Description</th>
-                                    <th class="text-end">Unit QTY</th>
-                                    <th class="text-end">Unit RRP</th>
-                                    <th class="text-end">Unit Price ex GST</th>
-                                    <th class="text-end">Disc</th>
-                                    <th class="text-end">Unit Price after Disc</th>
-                                    <th class="text-end">TOTAL ex GST</th>
+                                    <th style="width: 16%; text-align: left; font-weight: 400; padding: 4px 8px;">Item No</th>
+                                    <th style="width: 28%; text-align: center; font-weight: 400; padding: 4px 8px;">Description</th>
+                                    <th style="width: 9%; text-align: right; font-weight: 400; padding: 4px 8px;">RRP</th>
+                                    <th style="width: 8%; text-align: right; font-weight: 400; padding: 4px 8px;">Unit<br/>QTY</th>
+                                    <th style="width: 10%; text-align: right; font-weight: 400; padding: 4px 8px;">Unit<br/>Price ex<br/>GST</th>
+                                    <th style="width: 7%; text-align: right; font-weight: 400; padding: 4px 8px;">Disc</th>
+                                    <th style="width: 11%; text-align: right; font-weight: 400; padding: 4px 8px;">Unit<br/>Price<br/>after<br/>Disc</th>
+                                    <th style="width: 11%; text-align: right; font-weight: 400; padding: 4px 8px;">TOTAL<br/>ex GST</th>
+                                </tr>
+                                <tr>
+                                    <th colspan="8" style="border-bottom: 2px solid #222; height: 14px;"></th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr t-foreach="doc._get_neto_history_product_lines()" t-as="line">
-                                    <td><span t-out="doc._get_neto_history_line_sku(line)"/></td>
-                                    <td><span t-out="doc._get_neto_history_line_description(line)"/></td>
-                                    <td class="text-end"><span t-out="'%.0f' % line.product_uom_qty"/></td>
-                                    <td class="text-end">
-                                        <span t-out="doc._get_neto_history_line_rrp(line)" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    <td style="vertical-align: top; padding: 8px 8px;"><span t-out="doc._get_neto_history_line_sku(line)"/></td>
+                                    <td style="vertical-align: top; padding: 8px 8px;"><span t-out="doc._get_neto_history_line_description(line)"/></td>
+                                    <td style="vertical-align: top; text-align: right; padding: 8px 8px;">
+                                        <span t-out="doc._format_neto_history_money(doc._get_neto_history_line_rrp(line))"/>
                                     </td>
-                                    <td class="text-end">
-                                        <span t-field="line.price_unit" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    <td style="vertical-align: top; text-align: right; padding: 8px 8px;"><span t-out="'%.0f' % line.product_uom_qty"/></td>
+                                    <td style="vertical-align: top; text-align: right; padding: 8px 8px;">
+                                        <span t-out="doc._format_neto_history_money(line.price_unit)"/>
                                     </td>
-                                    <td class="text-end"><span t-out="'%.0f' % (line.discount or 0.0) + '%'"/></td>
-                                    <td class="text-end">
-                                        <span t-out="line.price_unit * (1 - ((line.discount or 0.0) / 100.0))" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    <td style="vertical-align: top; text-align: right; padding: 8px 8px;"><span t-out="'%.0f' % (line.discount or 0.0) + '%'"/></td>
+                                    <td style="vertical-align: top; text-align: right; padding: 8px 8px;">
+                                        <span t-out="doc._format_neto_history_money(line.price_unit * (1 - ((line.discount or 0.0) / 100.0)))"/>
                                     </td>
-                                    <td class="text-end">
-                                        <span t-field="line.price_subtotal" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                    <td style="vertical-align: top; text-align: right; padding: 8px 8px;">
+                                        <span t-out="doc._format_neto_history_money(line.price_subtotal)"/>
                                     </td>
                                 </tr>
                             </tbody>
                         </table>
 
-                        <div class="row mt-2">
-                            <div class="col-6">
-                                <p>Total QTY: <span t-out="doc._get_neto_history_total_quantity()"/></p>
-                                <div t-if="doc._get_neto_history_payments()">
-                                    <h5>Order payment history</h5>
-                                    <table class="table table-sm" style="font-size: 11px;">
+                        <table style="width: 100%; border-collapse: collapse; margin-top: 14px;">
+                            <tr>
+                                <td style="width: 55%; vertical-align: top; padding: 0 8px;">
+                                    <p>Total QTY: <span t-out="doc._get_neto_history_total_quantity()"/></p>
+                                    <div t-if="doc._get_neto_history_payments()" style="margin-top: 22px;">
+                                        <h3 style="font-size: 16px; margin: 0 0 8px 0;">Order payment history</h3>
+                                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
                                         <thead>
                                             <tr>
-                                                <th>Date</th>
-                                                <th>Payment Method</th>
-                                                <th class="text-end">Amount</th>
+                                                <th style="text-align: left;">Date</th>
+                                                <th style="text-align: left;">Payment Method</th>
+                                                <th style="text-align: right;">Amount</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             <tr t-foreach="doc._get_neto_history_payments()" t-as="payment">
                                                 <td><span t-field="payment.date_paid" t-options='{"widget": "date"}'/></td>
                                                 <td><span t-out="payment.payment_method_name or payment.payment_method or ''"/></td>
-                                                <td class="text-end"><span t-field="payment.amount_paid"/></td>
+                                                <td style="text-align: right;"><span t-out="doc._format_neto_history_money(payment.amount_paid)"/></td>
                                             </tr>
                                         </tbody>
                                     </table>
-                                </div>
-                            </div>
-                            <div class="col-6">
-                                <table class="table table-sm table-borderless" style="width: 100%;">
+                                    </div>
+                                </td>
+                                <td style="width: 45%; vertical-align: top;">
+                                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                                     <tbody>
                                         <tr t-if="doc._get_neto_history_shipping_subtotal()">
-                                            <th>Shipping (ex GST):</th>
-                                            <td class="text-end">
-                                                <span t-out="doc._get_neto_history_shipping_subtotal()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            <th style="text-align: left; padding: 3px 8px;">Shipping (ex GST):</th>
+                                            <td style="text-align: right; padding: 3px 8px;">
+                                                <span t-out="doc._format_neto_history_money(doc._get_neto_history_shipping_subtotal())"/>
                                             </td>
                                         </tr>
                                         <tr>
-                                            <th>Sales Total (ex GST):</th>
-                                            <td class="text-end">
-                                                <span t-out="doc._get_neto_history_sales_subtotal()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            <th style="text-align: left; padding: 3px 8px;">Sales Total (ex GST):</th>
+                                            <td style="text-align: right; padding: 3px 8px;">
+                                                <span t-out="doc._format_neto_history_money(doc._get_neto_history_sales_subtotal())"/>
                                             </td>
                                         </tr>
                                         <tr t-if="doc._get_neto_history_surcharge_subtotal()">
-                                            <th>Fuel Surcharge (ex GST):</th>
-                                            <td class="text-end">
-                                                <span t-out="doc._get_neto_history_surcharge_subtotal()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            <th style="text-align: left; padding: 3px 8px;">Fuel Surcharge (ex GST):</th>
+                                            <td style="text-align: right; padding: 3px 8px;">
+                                                <span t-out="doc._format_neto_history_money(doc._get_neto_history_surcharge_subtotal())"/>
                                             </td>
                                         </tr>
                                         <tr>
-                                            <th>GST Total:</th>
-                                            <td class="text-end"><span t-field="doc.amount_tax"/></td>
+                                            <th style="text-align: left; padding: 3px 8px;">GST Total:</th>
+                                            <td style="text-align: right; padding: 3px 8px;"><span t-out="doc._format_neto_history_money(doc.amount_tax)"/></td>
                                         </tr>
                                         <tr>
-                                            <th><b>Total (<span t-out="doc.currency_id.name"/>):</b></th>
-                                            <td class="text-end"><b><span t-field="doc.amount_total"/></b></td>
+                                            <th style="text-align: left; padding: 3px 8px;"><b>Total (<span t-out="doc.currency_id.name"/>):</b></th>
+                                            <td style="text-align: right; padding: 3px 8px;"><b><span t-out="doc._format_neto_history_money(doc.amount_total)"/></b></td>
                                         </tr>
                                         <tr>
-                                            <th>Amount Paid:</th>
-                                            <td class="text-end">
-                                                <span t-out="doc._get_neto_history_amount_paid()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            <th style="text-align: left; padding: 3px 8px;">Amount Paid:</th>
+                                            <td style="text-align: right; padding: 3px 8px;">
+                                                <span t-out="doc._format_neto_history_money(doc._get_neto_history_amount_paid())"/>
                                             </td>
                                         </tr>
                                         <tr>
-                                            <th>Amount Owed:</th>
-                                            <td class="text-end">
-                                                <span t-out="doc._get_neto_history_amount_owed()" t-options='{"widget": "monetary", "display_currency": doc.currency_id}'/>
+                                            <th style="text-align: left; padding: 3px 8px;">Amount Owed:</th>
+                                            <td style="text-align: right; padding: 3px 8px;">
+                                                <span t-out="doc._format_neto_history_money(doc._get_neto_history_amount_owed())"/>
                                             </td>
                                         </tr>
                                     </tbody>
                                 </table>
-                            </div>
-                        </div>
+                                </td>
+                            </tr>
+                        </table>
 
-                        <div class="mt-3" t-if="doc.company_id.partner_id.bank_ids">
-                            <p class="mb-1">Direct Bank Deposit</p>
-                            <p class="mb-1"><strong t-out="doc.company_id.partner_id.bank_ids[0].acc_holder_name or doc.company_id.name"/></p>
-                            <p class="mb-1">BSB - Account No:</p>
-                            <p class="mb-1"><span t-out="doc.company_id.partner_id.bank_ids[0].acc_number"/></p>
-                            <p class="mb-1">Please quote your Customer Reference: <span t-out="doc.partner_id.ref or doc.neto_order_id"/></p>
+                        <div style="margin-top: 24px; font-size: 13px;" t-if="doc.company_id.partner_id.bank_ids">
+                            <p style="margin: 0 0 8px 0;">Direct Bank Deposit</p>
+                            <p style="margin: 0 0 8px 0;"><strong t-out="doc.company_id.partner_id.bank_ids[0].acc_holder_name or doc.company_id.name"/></p>
+                            <p style="margin: 0 0 8px 0;">BSB - Account No:</p>
+                            <p style="margin: 0 0 12px 0;"><span t-out="doc.company_id.partner_id.bank_ids[0].acc_number"/></p>
+                            <p style="margin: 0;">Please quote your Customer Reference: <span t-out="doc.partner_id.ref or doc.neto_order_id"/></p>
                         </div>
                     </div>
                 </t>

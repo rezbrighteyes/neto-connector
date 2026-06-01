@@ -138,6 +138,10 @@ class SaleOrder(models.Model):
             )
         )
 
+    def _format_neto_history_money(self, amount):
+        self.ensure_one()
+        return "$%.2f" % (amount or 0.0)
+
     def _get_neto_history_line_sku(self, line):
         product = line.product_id
         return (
