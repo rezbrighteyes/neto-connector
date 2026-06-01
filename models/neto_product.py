@@ -210,13 +210,10 @@ class NetoProductLink(models.Model):
     last_sync_date = fields.Datetime(string='Last Sync Date')
     last_sync_note = fields.Text(string='Last Sync Note')
 
-    _sql_constraints = [
-        (
-            'neto_product_link_store_product_id_uniq',
-            'unique(store_id, neto_product_id)',
-            'A Neto product ID can only be linked once per store.',
-        ),
-    ]
+    _neto_product_link_store_product_id_uniq = models.Constraint(
+        'unique(store_id, neto_product_id)',
+        'A Neto product ID can only be linked once per store.',
+    )
 
     @api.constrains('store_id', 'neto_sku')
     def _check_unique_store_sku(self):
