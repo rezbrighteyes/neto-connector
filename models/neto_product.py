@@ -531,6 +531,17 @@ class NetoConnector(models.AbstractModel):
                     neto_product_id, len(products),
                 )
                 return False, True
+            if 'external_api_id' in Product._fields and neto_product_id.isdigit():
+                products = Product.search([('external_api_id', '=', int(neto_product_id))])
+                matched, conflict = self._select_active_unique_match(products)
+                if matched:
+                    return matched, False
+                if conflict:
+                    _logger.info(
+                        'Neto product sync: ignoring shared external API ID %s matched to %d product(s)',
+                        neto_product_id, len(products),
+                    )
+                    return False, True
         reference_candidates = _get_neto_reference_candidates(item)
         for sku_variant in sku_variants:
             if sku_variant not in reference_candidates:
@@ -697,6 +708,8 @@ class NetoConnector(models.AbstractModel):
         }
         if 'reza_generic_barcode' in self.env['product.product']._fields:
             values['reza_generic_barcode'] = generic_barcode or False
+        if 'external_api_id' in self.env['product.product']._fields:
+            values['external_api_id'] = int(neto_product_id) if neto_product_id.isdigit() else False
         # Preserve an existing Odoo internal reference on matched products.
         if not product or not product.default_code:
             values['default_code'] = sku or False
