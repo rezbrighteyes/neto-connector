@@ -224,7 +224,6 @@ class SaleOrder(models.Model):
             | self.partner_id
             | self.partner_invoice_id.commercial_partner_id
             | self.partner_id.commercial_partner_id
-            | self.commercial_partner_id
         )
         for partner in partners.filtered(bool):
             rule = getattr(
