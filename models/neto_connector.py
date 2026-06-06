@@ -450,6 +450,25 @@ class NetoConnector(models.AbstractModel):
             _logger.warning('Neto sync: GetItem returned no variant data for ParentSKU %s', parent_sku)
         return items
 
+    def _prepare_product_for_store_company(self, product, store):
+        """Make a matched product usable on orders for the store company."""
+        if not product or not store.company_id:
+            return product
+
+        product = product.sudo()
+        template = product.product_tmpl_id.sudo()
+
+        if 'company_id' in product._fields and product.company_id and product.company_id != store.company_id:
+            product.write({'company_id': False})
+
+        if 'company_id' in template._fields and template.company_id and template.company_id != store.company_id:
+            template.write({'company_id': False})
+
+        if 'company_ids' in template._fields and store.company_id.id not in template.company_ids.ids:
+            template.write({'company_ids': [(4, store.company_id.id)]})
+
+        return product.with_company(store.company_id)
+
     def _get_or_create_product_from_neto(self, store, sku, line_data):
         """Look up SKU in Odoo; if missing, call GetItem and create a placeholder product.
 
@@ -461,16 +480,16 @@ class NetoConnector(models.AbstractModel):
         if hasattr(self, '_select_active_unique_match'):
             product, conflict_on_default_code = self._select_active_unique_match(products)
             if product:
-                return product, False
+                return self._prepare_product_for_store_company(product, store), False
         elif len(products) == 1:
-            return products, False
+            return self._prepare_product_for_store_company(products, store), False
 
         item = self._fetch_neto_item(store, sku)
         if item:
             if hasattr(self, '_match_existing_product'):
                 product, conflict = self._match_existing_product(store, item)
                 if product:
-                    return product, False
+                    return self._prepare_product_for_store_company(product, store), False
                 if conflict:
                     _logger.warning(
                         'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
@@ -485,7 +504,7 @@ class NetoConnector(models.AbstractModel):
                         'Neto sync: SKU=%s matched existing product "%s" via barcode %s',
                         sku, product.name, neto_barcode,
                     )
-                    return product, False
+                    return self._prepare_product_for_store_company(product, store), False
             neto_generic_barcode = (item.get('UPC1') or '').strip()
             if neto_generic_barcode and 'reza_generic_barcode' in Product._fields:
                 product = Product.search([
@@ -496,7 +515,7 @@ class NetoConnector(models.AbstractModel):
                         'Neto sync: SKU=%s matched existing product "%s" via generic barcode %s',
                         sku, product.name, neto_generic_barcode,
                     )
-                    return product, False
+                    return self._prepare_product_for_store_company(product, store), False
 
         if conflict_on_default_code:
             _logger.warning(
