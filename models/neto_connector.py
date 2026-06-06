@@ -1781,15 +1781,23 @@ class NetoConnector(models.AbstractModel):
     # Public entry point (cron)
     # -------------------------------------------------------------------------
 
-    def run_sync(self, hours_back=None):
+    def run_sync(self, hours_back=None, import_as_history=False):
         stores = self.env['neto.store'].sudo().search([('active', '=', True)])
-        _logger.info('Neto connector: run_sync called — %d active store(s) found', len(stores))
+        _logger.info(
+            'Neto connector: run_sync called — %d active store(s) found%s',
+            len(stores),
+            ' [history quotations mode]' if import_as_history else '',
+        )
         if not stores:
             _logger.warning('Neto connector: no active stores configured — aborting sync.')
             return
         for store in stores:
             try:
-                self._sync_store(store, hours_back=hours_back)
+                self._sync_store(
+                    store,
+                    hours_back=hours_back,
+                    import_as_history=import_as_history,
+                )
             except Exception as exc:
                 _logger.exception(
                     'Neto connector: _sync_store failed for store "%s" — %s',
