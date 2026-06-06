@@ -1214,6 +1214,44 @@ class NetoConnector(models.AbstractModel):
         )
         return target_state
 
+    def _patch_existing_order_from_neto(self, order, order_data, store, synced_customers=None):
+        """Refresh Neto metadata on an existing order without touching workflow records."""
+        if synced_customers is None:
+            synced_customers = set()
+        order_id = order_data.get('OrderID', '') or order.neto_order_id
+        username = order_data.get('Username', '') or ''
+        order_status = order_data.get('OrderStatus', '') or ''
+        payment_method, _amount_paid, date_paid, _is_partial = self._get_payment_info_from_order(
+            order_data, order_id
+        )
+
+        write_vals = {}
+        if order_status:
+            write_vals['neto_order_status'] = order_status
+        if 'neto_consignment_number' in order._fields:
+            write_vals['neto_consignment_number'] = self._get_consignment_number_from_order(order_data)
+        if date_paid and 'neto_date_paid' in order._fields:
+            write_vals['neto_date_paid'] = date_paid
+        if payment_method and 'neto_payment_method' in order._fields:
+            write_vals['neto_payment_method'] = payment_method
+
+        ship_partner = self._get_or_create_ship_address(order.partner_id, order_data)
+        if ship_partner:
+            write_vals['partner_shipping_id'] = ship_partner.id
+
+        if write_vals:
+            order.sudo().write(write_vals)
+
+        if username and username not in synced_customers:
+            self._sync_customer(store, order.partner_id, username)
+            synced_customers.add(username)
+
+        _logger.info(
+            'Neto sync: refreshed existing order %s for Neto order %s — fields updated: %s',
+            order.name, order_id, sorted(write_vals.keys()),
+        )
+        return write_vals
+
     def _create_sale_order(self, order_data, partner, store, neto_internal=False, import_as_history=False):
         Order = self.env['sale.order'].sudo()
 
@@ -1615,9 +1653,25 @@ class NetoConnector(models.AbstractModel):
         try:
             if order_id in synced_ids:
                 return
-            if self.env['sale.order'].sudo().search_count(
-                [('neto_order_id', '=', order_id)]
-            ):
+            existing_order = self.env['sale.order'].sudo().search(
+                [('neto_order_id', '=', order_id)], limit=1
+            )
+            if existing_order:
+                updated_fields = self._patch_existing_order_from_neto(
+                    existing_order, order_data, store, synced_customers
+                )
+                SyncLog.create({
+                    **base_vals,
+                    'state': 'success',
+                    'sale_order_id': existing_order.id,
+                    'partner_id': existing_order.partner_id.id,
+                    'line_count': len(existing_order.order_line),
+                    'neto_total_lines_checked': True,
+                    'skip_reason': (
+                        'Existing order refreshed from Neto; updated fields: %s'
+                        % ', '.join(sorted(updated_fields.keys()))
+                    ),
+                })
                 return
             synced_ids.add(order_id)
 

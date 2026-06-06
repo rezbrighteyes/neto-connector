@@ -152,33 +152,7 @@ class NetoSyncWizard(models.TransientModel):
     def _patch_existing_order(self, sale_order, order_data, store):
         """Patch Neto-sourced fields on an existing SO without touching order lines."""
         connector = self.env['neto.connector']
-        order_id = order_data.get('OrderID', '')
-
-        payment_method, amount_paid, date_paid, is_partial = \
-            connector._get_payment_info_from_order(order_data, order_id)
-
-        ship_partner = connector._get_or_create_ship_address(
-            sale_order.partner_id, order_data
-        )
-
-        write_vals = {}
-        consignment_number = connector._get_consignment_number_from_order(order_data)
-        if consignment_number and 'neto_consignment_number' in self.env['sale.order']._fields:
-            write_vals['neto_consignment_number'] = consignment_number
-        if date_paid and 'neto_date_paid' in self.env['sale.order']._fields:
-            write_vals['neto_date_paid'] = date_paid
-        if payment_method and 'neto_payment_method' in self.env['sale.order']._fields:
-            write_vals['neto_payment_method'] = payment_method
-        if ship_partner:
-            write_vals['partner_shipping_id'] = ship_partner.id
-
-        if write_vals:
-            sale_order.sudo().write(write_vals)
-            _logger.info(
-                'Neto re-sync: patched order %s — fields updated: %s',
-                sale_order.name, list(write_vals.keys()),
-            )
-        return write_vals
+        return connector._patch_existing_order_from_neto(sale_order, order_data, store)
 
     def _sync_single_order(self, store, order_id):
         existing = self.env['sale.order'].sudo().search(
