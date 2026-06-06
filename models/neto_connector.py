@@ -1745,6 +1745,7 @@ class NetoConnector(models.AbstractModel):
         until_dt=None,
         import_as_history=False,
         should_stop=None,
+        update_cursor=True,
     ):
         # Suppress all email notifications during sync
         self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
@@ -1820,7 +1821,8 @@ class NetoConnector(models.AbstractModel):
                 )
                 processed_orders += 1
 
-            store.sudo().write({'last_sync_date': fields.Datetime.now()})
+            if update_cursor:
+                store.sudo().write({'last_sync_date': fields.Datetime.now()})
             self.env.cr.commit()
 
             if should_stop and should_stop():

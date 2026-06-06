@@ -156,8 +156,8 @@ class NetoHistoryImportJob(models.Model):
                     until_dt=date_to,
                     import_as_history=self.import_as_history,
                     should_stop=self._cancel_requested,
+                    update_cursor=False,
                 )
-                self.store_id.sudo().write({'last_sync_date': previous_last_sync_date})
 
             if self._cancel_requested():
                 self._finish_cancelled()
