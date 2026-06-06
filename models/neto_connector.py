@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from markupsafe import Markup
 from odoo import models, fields
+from odoo.exceptions import ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -458,14 +459,26 @@ class NetoConnector(models.AbstractModel):
         product = product.sudo()
         template = product.product_tmpl_id.sudo()
 
-        if 'company_id' in product._fields and product.company_id and product.company_id != store.company_id:
-            product.write({'company_id': False})
+        try:
+            with self.env.cr.savepoint():
+                if 'company_id' in product._fields and product.company_id and product.company_id != store.company_id:
+                    product.write({'company_id': False})
 
-        if 'company_id' in template._fields and template.company_id and template.company_id != store.company_id:
-            template.write({'company_id': False})
+                if 'company_id' in template._fields and template.company_id and template.company_id != store.company_id:
+                    template.write({'company_id': False})
 
-        if 'company_ids' in template._fields and store.company_id.id not in template.company_ids.ids:
-            template.write({'company_ids': [(4, store.company_id.id)]})
+                if 'company_ids' in template._fields and store.company_id.id not in template.company_ids.ids:
+                    template.write({'company_ids': [(4, store.company_id.id)]})
+        except ValidationError as exc:
+            if 'Barcode(s) already assigned' not in str(exc):
+                raise
+            _logger.warning(
+                'Neto sync: could not share matched product "%s" with company "%s" '
+                'because of an existing barcode conflict; creating an order-line placeholder instead',
+                product.display_name,
+                store.company_id.display_name,
+            )
+            return False
 
         return product.with_company(store.company_id)
 
@@ -480,16 +493,22 @@ class NetoConnector(models.AbstractModel):
         if hasattr(self, '_select_active_unique_match'):
             product, conflict_on_default_code = self._select_active_unique_match(products)
             if product:
-                return self._prepare_product_for_store_company(product, store), False
+                product = self._prepare_product_for_store_company(product, store)
+                if product:
+                    return product, False
         elif len(products) == 1:
-            return self._prepare_product_for_store_company(products, store), False
+            product = self._prepare_product_for_store_company(products, store)
+            if product:
+                return product, False
 
         item = self._fetch_neto_item(store, sku)
         if item:
             if hasattr(self, '_match_existing_product'):
                 product, conflict = self._match_existing_product(store, item)
                 if product:
-                    return self._prepare_product_for_store_company(product, store), False
+                    product = self._prepare_product_for_store_company(product, store)
+                    if product:
+                        return product, False
                 if conflict:
                     _logger.warning(
                         'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
@@ -504,7 +523,9 @@ class NetoConnector(models.AbstractModel):
                         'Neto sync: SKU=%s matched existing product "%s" via barcode %s',
                         sku, product.name, neto_barcode,
                     )
-                    return self._prepare_product_for_store_company(product, store), False
+                    product = self._prepare_product_for_store_company(product, store)
+                    if product:
+                        return product, False
             neto_generic_barcode = (item.get('UPC1') or '').strip()
             if neto_generic_barcode and 'reza_generic_barcode' in Product._fields:
                 product = Product.search([
@@ -515,7 +536,9 @@ class NetoConnector(models.AbstractModel):
                         'Neto sync: SKU=%s matched existing product "%s" via generic barcode %s',
                         sku, product.name, neto_generic_barcode,
                     )
-                    return self._prepare_product_for_store_company(product, store), False
+                    product = self._prepare_product_for_store_company(product, store)
+                    if product:
+                        return product, False
 
         if conflict_on_default_code:
             _logger.warning(
