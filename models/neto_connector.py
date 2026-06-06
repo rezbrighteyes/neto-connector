@@ -872,6 +872,7 @@ class NetoConnector(models.AbstractModel):
                     'DefaultInvoiceTerms',
                     'AccountManager',
                     'Classification2',
+                    'Active',
                 ],
             }
         }
@@ -960,6 +961,13 @@ class NetoConnector(models.AbstractModel):
         if classification2 is not None:
             vals['neto_classification'] = str(classification2)
 
+        active = customer.get('Active')
+        if active is not None:
+            if isinstance(active, bool):
+                vals['active'] = active
+            else:
+                vals['active'] = str(active).strip().lower() in ('true', '1', 'yes')
+
         try:
             partner.sudo().write(vals)
             _logger.info('Neto sync: GetCustomer synced for username %s', username)
@@ -991,7 +999,7 @@ class NetoConnector(models.AbstractModel):
     def _get_or_create_partner(self, username, order_data, store, synced_customers=None):
         if synced_customers is None:
             synced_customers = set()
-        Partner = self.env['res.partner'].sudo()
+        Partner = self.env['res.partner'].sudo().with_context(active_test=False)
         partner = Partner.search([('neto_username', '=', username)], limit=1)
         if partner:
             if username not in synced_customers:
