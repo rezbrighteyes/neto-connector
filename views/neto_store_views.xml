@@ -39,6 +39,7 @@
                         </group>
                         <group string="Sync Status">
                             <field name="last_sync_date"/>
+                            <field name="last_rma_sync_date"/>
                             <field name="last_product_sync_date"/>
                             <field name="last_payment_sync_date"/>
                         </group>

@@ -89,6 +89,7 @@
                     <field name="chunk_days"/>
                     <field name="queue_orders"/>
                     <field name="queue_payments"/>
+                    <field name="queue_rmas"/>
                     <field name="import_as_history"/>
                 </group>
                 <footer>

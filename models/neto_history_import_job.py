@@ -27,6 +27,7 @@ class NetoHistoryImportJob(models.Model):
     date_to = fields.Datetime(required=True, index=True)
     import_orders = fields.Boolean(default=True)
     import_payments = fields.Boolean(default=True)
+    import_rmas = fields.Boolean(string='Import RMAs', default=False)
     import_as_history = fields.Boolean(default=True)
     state = fields.Selection(
         [
@@ -48,6 +49,9 @@ class NetoHistoryImportJob(models.Model):
     payments_after = fields.Integer(readonly=True)
     payments_processed = fields.Integer(readonly=True)
     payments_relinked = fields.Integer(readonly=True)
+    rmas_before = fields.Integer(readonly=True)
+    rmas_after = fields.Integer(readonly=True)
+    rmas_processed = fields.Integer(readonly=True)
     result_message = fields.Text(readonly=True)
     error_message = fields.Text(readonly=True)
 
@@ -131,6 +135,7 @@ class NetoHistoryImportJob(models.Model):
         connector = self.env['neto.connector'].sudo()
         SaleOrder = self.env['sale.order'].sudo()
         Payment = self.env['neto.payment'].sudo()
+        RmaLog = self.env['neto.rma.log'].sudo()
 
         self.write({
             'state': 'running',
@@ -144,9 +149,11 @@ class NetoHistoryImportJob(models.Model):
             date_to = self.date_to.replace(tzinfo=timezone.utc)
             previous_last_sync_date = self.store_id.last_sync_date
             previous_last_payment_sync_date = self.store_id.last_payment_sync_date
+            previous_last_rma_sync_date = self.store_id.last_rma_sync_date
             vals = {
                 'orders_before': SaleOrder.search_count(self._order_count_domain()),
                 'payments_before': Payment.search_count([('store_id', '=', self.store_id.id)]),
+                'rmas_before': RmaLog.search_count([('store_id', '=', self.store_id.id)]),
             }
 
             if self.import_orders:
@@ -178,10 +185,35 @@ class NetoHistoryImportJob(models.Model):
                 self._finish_cancelled()
                 return
 
+            if self.import_rmas:
+                rma_complete = connector._sync_rmas(
+                    self.store_id,
+                    date_from,
+                    until_dt=date_to,
+                    should_stop=self._cancel_requested,
+                )
+                if self._cancel_requested():
+                    self._finish_cancelled()
+                    return
+                if not rma_complete:
+                    raise UserError(_('RMA fetch was incomplete. The job can be queued again safely.'))
+                self.store_id.sudo().write({
+                    'last_rma_sync_date': previous_last_rma_sync_date,
+                })
+
+            if self._cancel_requested():
+                self._finish_cancelled()
+                return
+
             payments_relinked = connector._relink_orphan_payments(self.store_id)
 
             orders_after = SaleOrder.search_count(self._order_count_domain())
             payments_after = Payment.search_count([('store_id', '=', self.store_id.id)])
+            rmas_after = RmaLog.search_count([('store_id', '=', self.store_id.id)])
+            rmas_processed = RmaLog.search_count([
+                ('store_id', '=', self.store_id.id),
+                ('sync_date', '>=', self.started_at),
+            ]) if self.import_rmas else 0
             vals.update({
                 'state': 'done',
                 'finished_at': fields.Datetime.now(),
@@ -189,11 +221,15 @@ class NetoHistoryImportJob(models.Model):
                 'payments_after': payments_after,
                 'payments_processed': payments_processed,
                 'payments_relinked': payments_relinked,
+                'rmas_after': rmas_after,
+                'rmas_processed': rmas_processed,
                 'result_message': _(
                     'Orders: %(orders_before)s -> %(orders_after)s. '
                     'Payments: %(payments_before)s -> %(payments_after)s. '
                     'Payment rows processed: %(payments_processed)s. '
-                    'Orphan payments relinked: %(payments_relinked)s.'
+                    'Orphan payments relinked: %(payments_relinked)s. '
+                    'RMAs: %(rmas_before)s -> %(rmas_after)s. '
+                    'RMA rows processed: %(rmas_processed)s.'
                 ) % {
                     'orders_before': vals['orders_before'],
                     'orders_after': orders_after,
@@ -201,6 +237,9 @@ class NetoHistoryImportJob(models.Model):
                     'payments_after': payments_after,
                     'payments_processed': payments_processed,
                     'payments_relinked': payments_relinked,
+                    'rmas_before': vals['rmas_before'],
+                    'rmas_after': rmas_after,
+                    'rmas_processed': rmas_processed,
                 },
             })
             self.write(vals)
@@ -212,6 +251,8 @@ class NetoHistoryImportJob(models.Model):
                 restore_vals['last_sync_date'] = previous_last_sync_date
             if 'previous_last_payment_sync_date' in locals():
                 restore_vals['last_payment_sync_date'] = previous_last_payment_sync_date
+            if 'previous_last_rma_sync_date' in locals():
+                restore_vals['last_rma_sync_date'] = previous_last_rma_sync_date
             if restore_vals:
                 self.store_id.sudo().write(restore_vals)
             self.write({

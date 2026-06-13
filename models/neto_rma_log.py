@@ -13,7 +13,12 @@ class NetoRmaLog(models.Model):
     neto_rma_status = fields.Char(string="Neto RMA Status")
     neto_refund_total = fields.Float(string="Refund Total", digits=(16, 2))
     state = fields.Selection(
-        selection=[("success","Success"),("skipped","Skipped"),("error","Error")],
+        selection=[
+            ("success", "Success"),
+            ("partial", "Partial"),
+            ("skipped", "Skipped"),
+            ("error", "Error"),
+        ],
         string="State", required=True, index=True,
     )
     skip_reason = fields.Char(string="Skip Reason")
@@ -22,3 +27,20 @@ class NetoRmaLog(models.Model):
     credit_note_id = fields.Many2one("account.move", string="Credit Note", ondelete="set null")
     partner_id = fields.Many2one("res.partner", string="Partner", ondelete="set null")
     sync_date = fields.Datetime(string="Sync Date", default=fields.Datetime.now, readonly=True)
+
+    def upsert_for_rma(self, store, neto_rma_id, values):
+        """Keep one current sync result per store/RMA pair."""
+        log = self.search([
+            ("store_id", "=", store.id),
+            ("neto_rma_id", "=", neto_rma_id),
+        ], order="id desc", limit=1)
+        values = {
+            **values,
+            "store_id": store.id,
+            "neto_rma_id": neto_rma_id,
+            "sync_date": fields.Datetime.now(),
+        }
+        if log:
+            log.write(values)
+            return log
+        return self.create(values)

@@ -48,6 +48,7 @@ class NetoSyncWizard(models.TransientModel):
     result_message = fields.Text(string='Result', readonly=True)
     queue_orders = fields.Boolean(string='Import Orders', default=True)
     queue_payments = fields.Boolean(string='Import Payments', default=True)
+    queue_rmas = fields.Boolean(string='Import RMAs', default=False)
     chunk_days = fields.Integer(
         string='Days Per Background Chunk',
         default=7,
@@ -78,8 +79,8 @@ class NetoSyncWizard(models.TransientModel):
             raise UserError(_('Set both Date From and Date To before queueing a history import.'))
         if self.date_to <= self.date_from:
             raise UserError(_('Date To must be after Date From.'))
-        if not self.queue_orders and not self.queue_payments:
-            raise UserError(_('Select at least one import type: orders or payments.'))
+        if not self.queue_orders and not self.queue_payments and not self.queue_rmas:
+            raise UserError(_('Select at least one import type: orders, payments, or RMAs.'))
 
         chunk_days = max(self.chunk_days or 1, 1)
         Job = self.env['neto.history.import.job'].sudo()
@@ -98,6 +99,7 @@ class NetoSyncWizard(models.TransientModel):
                 'date_to': chunk_end,
                 'import_orders': self.queue_orders,
                 'import_payments': self.queue_payments,
+                'import_rmas': self.queue_rmas,
                 'import_as_history': self.import_as_history,
             })
             chunk_start = chunk_end

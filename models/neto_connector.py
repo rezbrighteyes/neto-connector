@@ -1969,9 +1969,24 @@ class NetoConnector(models.AbstractModel):
                 body = response.json()
             except Exception as exc:
                 _logger.error('Neto RMA sync [%s]: API error page %d — %s', store.name, page, exc)
-                break
+                return all_rmas, False
 
-            rmas = body.get('Rma', [])
+            response_body = body.get('GetRmaResponse', body)
+            if not isinstance(response_body, dict):
+                _logger.error(
+                    'Neto RMA sync [%s]: invalid response body on page %d',
+                    store.name, page,
+                )
+                return all_rmas, False
+            ack = str(response_body.get('Ack') or body.get('Ack') or '').strip().lower()
+            if ack and ack != 'success':
+                _logger.error(
+                    'Neto RMA sync [%s]: API Ack=%s on page %d — %s',
+                    store.name, ack, page, response_body.get('Messages') or body.get('Messages'),
+                )
+                return all_rmas, False
+
+            rmas = response_body.get('Rma', [])
             if isinstance(rmas, dict):
                 rmas = [rmas]
             rmas = rmas or []
@@ -1984,7 +1999,7 @@ class NetoConnector(models.AbstractModel):
             page += 1
 
         _logger.info('Neto RMA sync [%s]: %d total RMA(s)', store.name, len(all_rmas))
-        return all_rmas
+        return all_rmas, True
 
     def _get_refunds_from_rma(self, rma_data):
         refunds = rma_data.get('Refunds') or rma_data.get('Refund') or []
@@ -1999,10 +2014,25 @@ class NetoConnector(models.AbstractModel):
             return refunds
         return []
 
-    def _create_credit_note(self, rma_data, partner, store, original_invoice=None):
+    def _find_rma_product(self, store, sku, product_name):
+        Product = self.env['product.product'].sudo().with_context(active_test=False)
+        if sku:
+            product, conflict = self._match_existing_product(store, {'SKU': sku})
+            if product:
+                return product
+            if conflict:
+                return Product
+        if product_name:
+            products = Product.search([('name', '=ilike', product_name)])
+            if len(products) == 1:
+                return products
+        return Product
+
+    def _create_credit_note(
+        self, rma_data, partner, store, original_invoice=None, credit_note=None,
+    ):
         Move = self.env['account.move'].sudo()
         MoveLine = self.env['account.move.line'].sudo()
-        Product = self.env['product.product'].sudo()
 
         rma_id = str(rma_data.get('RmaID', ''))
         invoice_number = (rma_data.get('InvoiceNumber') or '').strip()
@@ -2022,15 +2052,28 @@ class NetoConnector(models.AbstractModel):
             'ref':                    f"Neto RMA {rma_id} / {invoice_number}",
             'narration':              internal_notes or False,
             'neto_rma_id':            rma_id,
+            'neto_rma_store_id':      store.id,
             'neto_rma_status':        rma_status,
         }
         if original_invoice:
             move_vals['invoice_origin'] = original_invoice.name
 
-        credit_note = Move.create(move_vals)
+        is_new_credit_note = not credit_note
+        issues = []
+        if credit_note:
+            credit_note.write({
+                'neto_rma_status': rma_status,
+                'neto_rma_store_id': store.id,
+                'narration': internal_notes or credit_note.narration,
+            })
+        else:
+            credit_note = Move.create(move_vals)
+        rebuild_lines = is_new_credit_note or credit_note.state == 'draft'
+        if not is_new_credit_note and credit_note.state == 'draft':
+            credit_note.invoice_line_ids.unlink()
 
-        raw_lines = rma_data.get('RmaLines') or {}
-        if isinstance(raw_lines, dict):
+        raw_lines = rma_data.get('RmaLines') or rma_data.get('RmaLine') or {}
+        if isinstance(raw_lines, dict) and 'RmaLine' in raw_lines:
             raw_lines = raw_lines.get('RmaLine', [])
         if isinstance(raw_lines, dict):
             raw_lines = [raw_lines]
@@ -2038,7 +2081,7 @@ class NetoConnector(models.AbstractModel):
 
         note_lines = []
 
-        for line in raw_lines:
+        for line in raw_lines if rebuild_lines else []:
             sku = (line.get('SKU') or '').strip()
             product_name = (line.get('ProductName') or '').strip()
             refund_subtotal = round(float(line.get('RefundSubtotal') or 0), 4)
@@ -2052,13 +2095,7 @@ class NetoConnector(models.AbstractModel):
             if not refund_subtotal and not product_name:
                 continue
 
-            product = None
-            if sku:
-                product = Product.search([('default_code', '=', sku)], limit=1)
-                if not product:
-                    product = Product.search([('barcode', '=', sku)], limit=1)
-            if not product and product_name:
-                product = Product.search([('name', 'ilike', product_name)], limit=1)
+            product = self._find_rma_product(store, sku, product_name)
 
             description = product_name or (product.name if product else sku or 'Return')
             if return_reason and return_reason.lower() != 'other':
@@ -2079,13 +2116,14 @@ class NetoConnector(models.AbstractModel):
             try:
                 MoveLine.create(line_vals)
             except Exception as exc:
+                issues.append('Product line %s failed: %s' % (sku or product_name, exc))
                 _logger.warning(
                     'Neto RMA sync: could not create line SKU=%s RMA=%s — %s',
                     sku, rma_id, exc,
                 )
 
         shipping_refund = round(float(rma_data.get('ShippingRefundAmount') or 0), 4)
-        if shipping_refund > 0:
+        if shipping_refund > 0 and rebuild_lines:
             ship_product = self._get_shipping_product()
             if ship_product:
                 try:
@@ -2097,10 +2135,11 @@ class NetoConnector(models.AbstractModel):
                         'name':       'Shipping Refund',
                     })
                 except Exception as exc:
+                    issues.append('Shipping refund line failed: %s' % exc)
                     _logger.warning('Neto RMA sync: shipping line failed RMA=%s — %s', rma_id, exc)
 
         surcharge_refund = round(float(rma_data.get('SurchargeRefundAmount') or 0), 4)
-        if surcharge_refund > 0:
+        if surcharge_refund > 0 and rebuild_lines:
             sc_product = self._get_surcharge_product()
             try:
                 MoveLine.create({
@@ -2111,17 +2150,28 @@ class NetoConnector(models.AbstractModel):
                     'name':       'Surcharge Refund',
                 })
             except Exception as exc:
+                issues.append('Surcharge refund line failed: %s' % exc)
                 _logger.warning('Neto RMA sync: surcharge line failed RMA=%s — %s', rma_id, exc)
 
-        try:
-            credit_note.sudo().action_post()
-            _logger.info('Neto RMA sync: credit note %s posted for RMA %s', credit_note.name, rma_id)
-        except Exception as exc:
-            _logger.warning('Neto RMA sync: could not post credit note RMA=%s — %s', rma_id, exc)
-            return credit_note, note_lines
+        if credit_note.state == 'draft':
+            try:
+                credit_note.sudo().action_post()
+                _logger.info('Neto RMA sync: credit note %s posted for RMA %s', credit_note.name, rma_id)
+            except Exception as exc:
+                issues.append('Credit note posting failed: %s' % exc)
+                _logger.warning('Neto RMA sync: could not post credit note RMA=%s — %s', rma_id, exc)
 
-        refunds = self._get_refunds_from_rma(rma_data)
-        for refund in refunds:
+        refund_total = round(float(rma_data.get('RefundTotal') or 0), 2)
+        if credit_note.state == 'posted' and abs(credit_note.amount_total - refund_total) > 0.02:
+            issues.append(
+                'Posted credit note total %.2f differs from latest Neto refund total %.2f'
+                % (credit_note.amount_total, refund_total)
+            )
+
+        refunds = self._get_refunds_from_rma(rma_data) if credit_note.state == 'posted' else []
+        if credit_note.state != 'posted':
+            issues.append('Refund payments skipped because the credit note is not posted')
+        for refund_index, refund in enumerate(refunds, start=1):
             if (refund.get('RefundStatus') or '').strip() != 'Refunded':
                 continue
             refund_amount = round(float(refund.get('RefundAmount') or 0), 2)
@@ -2131,37 +2181,63 @@ class NetoConnector(models.AbstractModel):
                 continue
             journal = self._get_payment_journal(payment_method, store.company_id)
             if not journal:
+                issues.append(
+                    'Refund payment %.2f skipped: no journal for %s'
+                    % (refund_amount, payment_method or 'unspecified method')
+                )
                 continue
+            refund_key = str(refund.get('RefundID') or '').strip()
+            if not refund_key:
+                refund_key = '%s:%s:%s:%s:%s' % (
+                    rma_id,
+                    refund_index,
+                    fields.Datetime.to_string(date_refunded),
+                    refund_amount,
+                    payment_method or '',
+                )
+            existing_payment = self.env['account.payment'].sudo().search([
+                ('neto_rma_store_id', '=', store.id),
+                ('neto_rma_refund_key', '=', refund_key),
+            ], limit=1)
             try:
-                payment = self.env['account.payment'].sudo().with_company(store.company_id).create({
-                    'payment_type': 'outbound',
-                    'partner_type': 'customer',
-                    'partner_id':   partner.id,
-                    'amount':       refund_amount,
-                    'date':         date_refunded,
-                    'journal_id':   journal.id,
-                    'company_id':   store.company_id.id,
-                })
-                payment.sudo().action_post()
+                payment = existing_payment
+                if not payment:
+                    payment = self.env['account.payment'].sudo().with_company(store.company_id).create({
+                        'payment_type': 'outbound',
+                        'partner_type': 'customer',
+                        'partner_id':   partner.id,
+                        'amount':       refund_amount,
+                        'date':         date_refunded,
+                        'journal_id':   journal.id,
+                        'company_id':   store.company_id.id,
+                        'neto_rma_id': rma_id,
+                        'neto_rma_store_id': store.id,
+                        'neto_rma_refund_key': refund_key,
+                    })
+                if payment.state == 'draft':
+                    payment.sudo().action_post()
                 payment.sudo().invalidate_recordset()
                 payment_lines = payment.move_id.line_ids.filtered(
                     lambda l: l.account_id.account_type == 'asset_receivable'
+                    and not l.reconciled
                 )
                 credit_lines = credit_note.line_ids.filtered(
                     lambda l: l.account_id.account_type == 'asset_receivable'
                     and not l.reconciled
                 )
-                (payment_lines + credit_lines).reconcile()
+                if payment_lines and credit_lines:
+                    (payment_lines + credit_lines).reconcile()
                 _logger.info(
                     'Neto RMA sync: refund payment %.2f reconciled for RMA %s',
                     refund_amount, rma_id,
                 )
             except Exception as exc:
+                issues.append('Refund payment %.2f failed: %s' % (refund_amount, exc))
                 _logger.warning(
                     'Neto RMA sync: refund payment failed RMA=%s — %s', rma_id, exc,
                 )
 
-        return credit_note, note_lines
+        return credit_note, note_lines, issues
 
     def _process_rma(self, rma_data, store, synced_rma_ids):
         RmaLog = self.env['neto.rma.log'].sudo()
@@ -2172,6 +2248,9 @@ class NetoConnector(models.AbstractModel):
         username = (rma_data.get('CustomerUsername') or '').strip()
         rma_status = (rma_data.get('RmaStatus') or '').strip()
         refund_total = round(float(rma_data.get('RefundTotal') or 0), 2)
+        if not rma_id:
+            _logger.error('Neto RMA sync [%s]: skipped RMA without RmaID', store.name)
+            return
 
         base_vals = {
             'neto_rma_id':        rma_id,
@@ -2185,11 +2264,32 @@ class NetoConnector(models.AbstractModel):
         try:
             if rma_id in synced_rma_ids:
                 return
-            if self.env['account.move'].sudo().search_count(
-                [('neto_rma_id', '=', rma_id)]
-            ):
-                return
             synced_rma_ids.add(rma_id)
+            credit_note = self.env['account.move'].sudo().search([
+                ('neto_rma_store_id', '=', store.id),
+                ('neto_rma_id', '=', rma_id),
+            ], limit=1)
+            if not credit_note:
+                legacy_log = RmaLog.search([
+                    ('store_id', '=', store.id),
+                    ('neto_rma_id', '=', rma_id),
+                    ('credit_note_id', '!=', False),
+                ], order='id desc', limit=1)
+                if (
+                    legacy_log.credit_note_id
+                    and not legacy_log.credit_note_id.neto_rma_store_id
+                    and legacy_log.credit_note_id.company_id == store.company_id
+                ):
+                    credit_note = legacy_log.credit_note_id
+            if not credit_note:
+                credit_note = self.env['account.move'].sudo().search([
+                    ('neto_rma_store_id', '=', False),
+                    ('neto_rma_id', '=', rma_id),
+                    ('company_id', '=', store.company_id.id),
+                ], limit=1)
+                if credit_note:
+                    credit_note.write({'neto_rma_store_id': store.id})
+            is_new_credit_note = not credit_note
 
             lookup_id = order_id_field or invoice_number
             original_order = None
@@ -2197,25 +2297,32 @@ class NetoConnector(models.AbstractModel):
 
             if lookup_id:
                 original_order = self.env['sale.order'].sudo().search(
-                    [('neto_order_id', '=', lookup_id)], limit=1
+                    [
+                        ('neto_order_id', '=', lookup_id),
+                        ('company_id', '=', store.company_id.id),
+                    ], limit=1
                 )
                 if not original_order:
                     _logger.info(
                         'Neto RMA sync: order %s not found — syncing first', lookup_id
                     )
-                    self._sync_single_order_by_id(store, lookup_id)
+                    self._sync_single_order_by_id(store, lookup_id, import_as_history=True)
                     original_order = self.env['sale.order'].sudo().search(
-                        [('neto_order_id', '=', lookup_id)], limit=1
+                        [
+                            ('neto_order_id', '=', lookup_id),
+                            ('company_id', '=', store.company_id.id),
+                        ], limit=1
                     )
                 if not original_order:
                     _logger.info(
                         'Neto RMA sync: RMA %s — order %s not found after sync attempt, '
                         'logging as skipped', rma_id, lookup_id
                     )
-                    RmaLog.create({
+                    RmaLog.upsert_for_rma(store, rma_id, {
                         **base_vals,
                         'state': 'skipped',
                         'skip_reason': f'Order {lookup_id} not found in Odoo (outside sync window)',
+                        'error_message': False,
                     })
                     return
 
@@ -2228,25 +2335,34 @@ class NetoConnector(models.AbstractModel):
                 partner = original_order.partner_id
             elif username:
                 partner = self.env['res.partner'].sudo().search(
-                    [('neto_username', '=', username)], limit=1
+                    [
+                        ('neto_username', '=', username),
+                        ('company_id', 'in', [store.company_id.id, False]),
+                    ], limit=1
                 )
                 if not partner:
-                    RmaLog.create({
+                    RmaLog.upsert_for_rma(store, rma_id, {
                         **base_vals,
                         'state': 'skipped',
                         'skip_reason': f'Partner not found for username {username}',
+                        'error_message': False,
                     })
                     return
             else:
-                RmaLog.create({
+                RmaLog.upsert_for_rma(store, rma_id, {
                     **base_vals,
                     'state': 'skipped',
                     'skip_reason': 'No order or username to identify partner',
+                    'error_message': False,
                 })
                 return
 
-            credit_note, note_lines = self._create_credit_note(
-                rma_data, partner, store, original_invoice=original_invoice
+            credit_note, note_lines, issues = self._create_credit_note(
+                rma_data,
+                partner,
+                store,
+                original_invoice=original_invoice,
+                credit_note=credit_note,
             )
 
             msg_parts = []
@@ -2262,22 +2378,32 @@ class NetoConnector(models.AbstractModel):
                     '<p>&#8505;&#65039; <strong>Neto RMA notes:</strong></p>'
                     '<ul>{items}</ul>'
                 ).format(items=items))
-            if msg_parts:
+            if msg_parts and is_new_credit_note:
                 credit_note.sudo().message_post(body=Markup('').join(msg_parts))
 
-            RmaLog.create({
+            RmaLog.upsert_for_rma(store, rma_id, {
                 **base_vals,
-                'state':          'success',
+                'state':          'partial' if issues else 'success',
                 'credit_note_id': credit_note.id,
                 'partner_id':     partner.id,
+                'skip_reason':    False,
+                'error_message':  '\n'.join(issues) if issues else False,
             })
-            _logger.info('Neto RMA sync: RMA %s → %s', rma_id, credit_note.name)
+            _logger.info(
+                'Neto RMA sync: RMA %s → %s%s',
+                rma_id, credit_note.name, ' (partial)' if issues else '',
+            )
 
         except Exception as exc:
             _logger.exception('Neto RMA sync: unhandled error on RMA %s', rma_id)
-            RmaLog.create({**base_vals, 'state': 'error', 'error_message': str(exc)})
+            RmaLog.upsert_for_rma(store, rma_id, {
+                **base_vals,
+                'state': 'error',
+                'skip_reason': False,
+                'error_message': str(exc),
+            })
 
-    def _sync_single_order_by_id(self, store, order_id):
+    def _sync_single_order_by_id(self, store, order_id, import_as_history=False):
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -2298,7 +2424,8 @@ class NetoConnector(models.AbstractModel):
         except Exception as exc:
             _logger.warning('Neto RMA sync: GetOrder failed for %s — %s', order_id, exc)
             return
-        orders = body.get('Order', [])
+        response_body = body.get('GetOrderResponse', body)
+        orders = response_body.get('Order', []) if isinstance(response_body, dict) else []
         if isinstance(orders, dict):
             orders = [orders]
         orders = orders or []
@@ -2306,20 +2433,39 @@ class NetoConnector(models.AbstractModel):
             return
         synced_ids = set()
         synced_customers = set()
-        self._process_order(orders[0], store, synced_ids, synced_customers)
+        self._process_order(
+            orders[0],
+            store,
+            synced_ids,
+            synced_customers,
+            import_as_history=import_as_history,
+        )
         self.env.cr.commit()
 
-    def _sync_rmas(self, store, since_dt, until_dt=None):
+    def _sync_rmas(self, store, since_dt, until_dt=None, should_stop=None):
         self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
         _logger.info('Neto RMA sync [%s]: starting from %s', store.name, since_dt)
         try:
-            rmas = self._fetch_rmas(store, since_dt, until_dt=until_dt)
+            rmas, fetch_complete = self._fetch_rmas(store, since_dt, until_dt=until_dt)
         except Exception as exc:
             _logger.error('Neto RMA sync [%s]: _fetch_rmas failed — %s', store.name, exc)
-            return
+            return False
+        if not fetch_complete:
+            _logger.error(
+                'Neto RMA sync [%s]: fetch incomplete — cursor was not advanced',
+                store.name,
+            )
+            return False
         synced_rma_ids = set()
         for rma_data in rmas:
+            if should_stop and should_stop():
+                _logger.info(
+                    'Neto RMA sync [%s]: stopped before remaining RMAs; cursor was not advanced',
+                    store.name,
+                )
+                return False
             self._process_rma(rma_data, store, synced_rma_ids)
             self.env.cr.commit()
         store.sudo().write({'last_rma_sync_date': fields.Datetime.now()})
         _logger.info('Neto RMA sync [%s]: completed — %d RMA(s)', store.name, len(rmas))
+        return True

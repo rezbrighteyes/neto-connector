@@ -17,12 +17,14 @@
                 <field name="date_to"/>
                 <field name="import_orders"/>
                 <field name="import_payments"/>
+                <field name="import_rmas"/>
                 <field name="state" widget="badge"
                        decoration-success="state == 'done'"
                        decoration-warning="state == 'running'"
                        decoration-danger="state == 'error'"/>
                 <field name="payments_processed"/>
                 <field name="payments_relinked"/>
+                <field name="rmas_processed"/>
                 <field name="finished_at"/>
             </list>
         </field>
@@ -69,6 +71,7 @@
                         <group>
                             <field name="import_orders"/>
                             <field name="import_payments"/>
+                            <field name="import_rmas"/>
                             <field name="import_as_history"/>
                             <field name="started_at"/>
                             <field name="finished_at"/>
@@ -81,6 +84,9 @@
                         <field name="payments_after"/>
                         <field name="payments_processed"/>
                         <field name="payments_relinked"/>
+                        <field name="rmas_before"/>
+                        <field name="rmas_after"/>
+                        <field name="rmas_processed"/>
                     </group>
                     <group>
                         <field name="result_message" readonly="1"/>

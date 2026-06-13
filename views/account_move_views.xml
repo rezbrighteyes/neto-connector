@@ -7,6 +7,7 @@
         <field name="arch" type="xml">
             <xpath expr="//header" position="inside">
                 <field name="neto_rma_id" readonly="1" invisible="not neto_rma_id" widget="badge" decoration-info="neto_rma_id != False" string="Neto RMA"/>
+                <field name="neto_rma_store_id" readonly="1" invisible="not neto_rma_id"/>
                 <field name="neto_rma_status" readonly="1" invisible="not neto_rma_status" widget="badge" string=""/>
             </xpath>
         </field>
