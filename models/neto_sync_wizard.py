@@ -31,10 +31,11 @@ class NetoSyncWizard(models.TransientModel):
              'without creating a duplicate.',
     )
     import_as_history = fields.Boolean(
-        string='Import As History Quotations',
+        string='Import As History (No Accounting)',
         default=False,
-        help='If enabled, imported Neto orders stay as quotations/drafts and skip '
-             'invoice creation so historical syncs do not affect outstanding balances.',
+        help='If enabled, imported Neto orders stay as quotations/drafts and RMAs are '
+             'saved as informational RMA Log records only. No invoices, credit notes, '
+             'or refund payments are created.',
     )
     # --- Date range mode ---
     date_from = fields.Datetime(

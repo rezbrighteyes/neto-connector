@@ -2014,6 +2014,27 @@ class NetoConnector(models.AbstractModel):
             return refunds
         return []
 
+    def _get_rma_refund_summary(self, rma_data):
+        refund_total = round(float(rma_data.get('RefundTotal') or 0), 2)
+        refunded_total = round(float(rma_data.get('RefundedTotal') or 0), 2)
+        refunds = self._get_refunds_from_rma(rma_data)
+        refunded_rows_total = sum(
+            round(float(refund.get('RefundAmount') or 0), 2)
+            for refund in refunds
+            if (refund.get('RefundStatus') or '').strip() == 'Refunded'
+        )
+        refunded_total = max(refunded_total, refunded_rows_total)
+
+        if refunded_total > 0 and (not refund_total or refunded_total >= refund_total - 0.01):
+            refund_state = 'refunded'
+        elif refunded_total > 0:
+            refund_state = 'partial'
+        elif refund_total > 0 or refunds:
+            refund_state = 'pending'
+        else:
+            refund_state = 'none'
+        return refund_total, refunded_total, refund_state
+
     def _find_rma_product(self, store, sku, product_name):
         Product = self.env['product.product'].sudo().with_context(active_test=False)
         if sku:
@@ -2239,7 +2260,7 @@ class NetoConnector(models.AbstractModel):
 
         return credit_note, note_lines, issues
 
-    def _process_rma(self, rma_data, store, synced_rma_ids):
+    def _process_rma(self, rma_data, store, synced_rma_ids, import_as_history=False):
         RmaLog = self.env['neto.rma.log'].sudo()
 
         rma_id = str(rma_data.get('RmaID', ''))
@@ -2247,17 +2268,32 @@ class NetoConnector(models.AbstractModel):
         order_id_field = (rma_data.get('OrderID') or '').strip()
         username = (rma_data.get('CustomerUsername') or '').strip()
         rma_status = (rma_data.get('RmaStatus') or '').strip()
-        refund_total = round(float(rma_data.get('RefundTotal') or 0), 2)
+        refund_total, refunded_total, refund_state = self._get_rma_refund_summary(rma_data)
+        internal_notes = (rma_data.get('InternalNotes') or '').strip()
         if not rma_id:
             _logger.error('Neto RMA sync [%s]: skipped RMA without RmaID', store.name)
             return
 
+        existing_log = RmaLog.search([
+            ('store_id', '=', store.id),
+            ('neto_rma_id', '=', rma_id),
+        ], order='id desc', limit=1)
+        history_only = bool(import_as_history or existing_log.is_history_import)
+        is_history_record = bool(
+            existing_log.is_history_import
+            or (import_as_history and not existing_log.credit_note_id)
+        )
         base_vals = {
             'neto_rma_id':        rma_id,
             'neto_invoice_number': invoice_number,
             'neto_username':      username,
             'neto_rma_status':    rma_status,
             'neto_refund_total':  refund_total,
+            'neto_refunded_total': refunded_total,
+            'neto_refund_state':  refund_state,
+            'is_history_import':  is_history_record,
+            'neto_order_id':      order_id_field or False,
+            'neto_internal_notes': internal_notes or False,
             'store_id':           store.id,
         }
 
@@ -2270,7 +2306,7 @@ class NetoConnector(models.AbstractModel):
                 ('neto_rma_id', '=', rma_id),
             ], limit=1)
             if not credit_note:
-                legacy_log = RmaLog.search([
+                legacy_log = existing_log or RmaLog.search([
                     ('store_id', '=', store.id),
                     ('neto_rma_id', '=', rma_id),
                     ('credit_note_id', '!=', False),
@@ -2287,7 +2323,7 @@ class NetoConnector(models.AbstractModel):
                     ('neto_rma_id', '=', rma_id),
                     ('company_id', '=', store.company_id.id),
                 ], limit=1)
-                if credit_note:
+                if credit_note and not history_only:
                     credit_note.write({'neto_rma_store_id': store.id})
             is_new_credit_note = not credit_note
 
@@ -2302,7 +2338,7 @@ class NetoConnector(models.AbstractModel):
                         ('company_id', '=', store.company_id.id),
                     ], limit=1
                 )
-                if not original_order:
+                if not original_order and not history_only:
                     _logger.info(
                         'Neto RMA sync: order %s not found — syncing first', lookup_id
                     )
@@ -2313,7 +2349,7 @@ class NetoConnector(models.AbstractModel):
                             ('company_id', '=', store.company_id.id),
                         ], limit=1
                     )
-                if not original_order:
+                if not original_order and not history_only:
                     _logger.info(
                         'Neto RMA sync: RMA %s — order %s not found after sync attempt, '
                         'logging as skipped', rma_id, lookup_id
@@ -2325,6 +2361,25 @@ class NetoConnector(models.AbstractModel):
                         'error_message': False,
                     })
                     return
+
+            if history_only:
+                partner = original_order.partner_id if original_order else self.env['res.partner']
+                if not partner and username:
+                    partner = self.env['res.partner'].sudo().search([
+                        ('neto_username', '=', username),
+                        ('company_id', 'in', [store.company_id.id, False]),
+                    ], limit=1)
+                RmaLog.upsert_for_rma(store, rma_id, {
+                    **base_vals,
+                    'state': 'success',
+                    'credit_note_id': credit_note.id or False,
+                    'sale_order_id': original_order.id or False,
+                    'partner_id': partner.id or False,
+                    'skip_reason': False,
+                    'error_message': False,
+                })
+                _logger.info('Neto RMA sync: RMA %s imported as history only', rma_id)
+                return
 
             if original_order and original_order.invoice_ids:
                 original_invoice = original_order.invoice_ids.filtered(
@@ -2385,6 +2440,7 @@ class NetoConnector(models.AbstractModel):
                 **base_vals,
                 'state':          'partial' if issues else 'success',
                 'credit_note_id': credit_note.id,
+                'sale_order_id':  original_order.id or False,
                 'partner_id':     partner.id,
                 'skip_reason':    False,
                 'error_message':  '\n'.join(issues) if issues else False,
@@ -2442,7 +2498,9 @@ class NetoConnector(models.AbstractModel):
         )
         self.env.cr.commit()
 
-    def _sync_rmas(self, store, since_dt, until_dt=None, should_stop=None):
+    def _sync_rmas(
+        self, store, since_dt, until_dt=None, should_stop=None, import_as_history=False,
+    ):
         self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
         _logger.info('Neto RMA sync [%s]: starting from %s', store.name, since_dt)
         try:
@@ -2464,7 +2522,12 @@ class NetoConnector(models.AbstractModel):
                     store.name,
                 )
                 return False
-            self._process_rma(rma_data, store, synced_rma_ids)
+            self._process_rma(
+                rma_data,
+                store,
+                synced_rma_ids,
+                import_as_history=import_as_history,
+            )
             self.env.cr.commit()
         store.sudo().write({'last_rma_sync_date': fields.Datetime.now()})
         _logger.info('Neto RMA sync [%s]: completed — %d RMA(s)', store.name, len(rmas))

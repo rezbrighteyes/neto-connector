@@ -191,6 +191,7 @@ class NetoHistoryImportJob(models.Model):
                     date_from,
                     until_dt=date_to,
                     should_stop=self._cancel_requested,
+                    import_as_history=self.import_as_history,
                 )
                 if self._cancel_requested():
                     self._finish_cancelled()

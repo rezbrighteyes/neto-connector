@@ -13,8 +13,15 @@
                 <field name="neto_rma_id"/>
                 <field name="neto_invoice_number"/>
                 <field name="neto_rma_status"/>
+                <field name="history_label" widget="badge"
+                       decoration-info="history_label == &apos;Historical&apos;"/>
+                <field name="neto_refund_state" widget="badge"
+                       decoration-success="neto_refund_state == &apos;refunded&apos;"
+                       decoration-warning="neto_refund_state in (&apos;pending&apos;, &apos;partial&apos;)"
+                       decoration-muted="neto_refund_state == &apos;none&apos;"/>
                 <field name="neto_username"/>
                 <field name="neto_refund_total" string="Refund Total"/>
+                <field name="neto_refunded_total" optional="show"/>
                 <field name="state" widget="badge"
                        decoration-success="state == &apos;success&apos;"
                        decoration-warning="state in (&apos;partial&apos;, &apos;skipped&apos;)"
@@ -37,9 +44,17 @@
                         <group string="RMA Info">
                             <field name="neto_rma_id"/>
                             <field name="neto_invoice_number"/>
-                            <field name="neto_rma_status"/>
+                            <field name="neto_order_id"/>
+                            <field name="neto_rma_status" widget="badge"/>
+                            <field name="history_label" widget="badge"
+                                   decoration-info="history_label == &apos;Historical&apos;"/>
+                            <field name="neto_refund_state" widget="badge"
+                                   decoration-success="neto_refund_state == &apos;refunded&apos;"
+                                   decoration-warning="neto_refund_state in (&apos;pending&apos;, &apos;partial&apos;)"
+                                   decoration-muted="neto_refund_state == &apos;none&apos;"/>
                             <field name="neto_username"/>
                             <field name="neto_refund_total"/>
+                            <field name="neto_refunded_total"/>
                         </group>
                         <group string="Sync Result">
                             <field name="store_id"/>
@@ -49,12 +64,14 @@
                                    decoration-danger="state == &apos;error&apos;"/>
                             <field name="sync_date"/>
                             <field name="credit_note_id"/>
+                            <field name="sale_order_id"/>
                             <field name="partner_id"/>
                         </group>
                     </group>
                     <group>
                         <field name="skip_reason" invisible="state != &apos;skipped&apos;"/>
                         <field name="error_message" invisible="state not in (&apos;partial&apos;, &apos;error&apos;)" widget="text"/>
+                        <field name="neto_internal_notes" widget="text"/>
                     </group>
                 </sheet>
             </form>
