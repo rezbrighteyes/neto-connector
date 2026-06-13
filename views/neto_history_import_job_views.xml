@@ -16,6 +16,7 @@
                 <field name="date_from"/>
                 <field name="date_to"/>
                 <field name="import_orders"/>
+                <field name="refresh_existing_orders"/>
                 <field name="import_payments"/>
                 <field name="import_rmas"/>
                 <field name="state" widget="badge"
@@ -70,6 +71,7 @@
                         </group>
                         <group>
                             <field name="import_orders"/>
+                            <field name="refresh_existing_orders"/>
                             <field name="import_payments"/>
                             <field name="import_rmas"/>
                             <field name="import_as_history"/>
@@ -80,6 +82,8 @@
                     <group string="Result">
                         <field name="orders_before"/>
                         <field name="orders_after"/>
+                        <field name="orders_refreshed"/>
+                        <field name="orders_refresh_failed"/>
                         <field name="payments_before"/>
                         <field name="payments_after"/>
                         <field name="payments_processed"/>

@@ -48,6 +48,13 @@ class NetoSyncWizard(models.TransientModel):
     )
     result_message = fields.Text(string='Result', readonly=True)
     queue_orders = fields.Boolean(string='Import Orders', default=True)
+    queue_refresh_existing_orders = fields.Boolean(
+        string='Refresh Existing Order Statuses',
+        default=False,
+        help='Re-fetch existing Neto orders by exact Order ID and refresh their Neto status, '
+             'tracking, payment metadata, and delivery address without creating duplicates '
+             'or changing accounting.',
+    )
     queue_payments = fields.Boolean(string='Import Payments', default=True)
     queue_rmas = fields.Boolean(string='Import RMAs', default=False)
     chunk_days = fields.Integer(
@@ -80,8 +87,15 @@ class NetoSyncWizard(models.TransientModel):
             raise UserError(_('Set both Date From and Date To before queueing a history import.'))
         if self.date_to <= self.date_from:
             raise UserError(_('Date To must be after Date From.'))
-        if not self.queue_orders and not self.queue_payments and not self.queue_rmas:
-            raise UserError(_('Select at least one import type: orders, payments, or RMAs.'))
+        if (
+            not self.queue_orders
+            and not self.queue_refresh_existing_orders
+            and not self.queue_payments
+            and not self.queue_rmas
+        ):
+            raise UserError(_(
+                'Select at least one import type: orders, existing-order refresh, payments, or RMAs.'
+            ))
 
         chunk_days = max(self.chunk_days or 1, 1)
         Job = self.env['neto.history.import.job'].sudo()
@@ -99,6 +113,7 @@ class NetoSyncWizard(models.TransientModel):
                 'date_from': chunk_start,
                 'date_to': chunk_end,
                 'import_orders': self.queue_orders,
+                'refresh_existing_orders': self.queue_refresh_existing_orders,
                 'import_payments': self.queue_payments,
                 'import_rmas': self.queue_rmas,
                 'import_as_history': self.import_as_history,

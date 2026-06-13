@@ -26,6 +26,7 @@ class NetoHistoryImportJob(models.Model):
     date_from = fields.Datetime(required=True, index=True)
     date_to = fields.Datetime(required=True, index=True)
     import_orders = fields.Boolean(default=True)
+    refresh_existing_orders = fields.Boolean(string='Refresh Existing Order Statuses', default=False)
     import_payments = fields.Boolean(default=True)
     import_rmas = fields.Boolean(string='Import RMAs', default=False)
     import_as_history = fields.Boolean(default=True)
@@ -45,6 +46,8 @@ class NetoHistoryImportJob(models.Model):
     finished_at = fields.Datetime(readonly=True)
     orders_before = fields.Integer(readonly=True)
     orders_after = fields.Integer(readonly=True)
+    orders_refreshed = fields.Integer(readonly=True)
+    orders_refresh_failed = fields.Integer(readonly=True)
     payments_before = fields.Integer(readonly=True)
     payments_after = fields.Integer(readonly=True)
     payments_processed = fields.Integer(readonly=True)
@@ -127,6 +130,32 @@ class NetoHistoryImportJob(models.Model):
         })
         self.env.cr.commit()
 
+    def _refresh_existing_orders(self, connector):
+        orders = self.env['sale.order'].sudo().search([
+            ('neto_order_id', '!=', False),
+            ('company_id', '=', self.store_id.company_id.id),
+            ('date_order', '>=', self.date_from),
+            ('date_order', '<', self.date_to),
+        ], order='id')
+        refreshed = 0
+        failed = []
+        for order in orders:
+            if self._cancel_requested():
+                break
+            try:
+                with self.env.cr.savepoint():
+                    order_data = connector._fetch_order_by_id(self.store_id, order.neto_order_id)
+                    if not order_data:
+                        failed.append('%s: not returned by Neto' % order.neto_order_id)
+                        continue
+                    connector._patch_existing_order_from_neto(order, order_data, self.store_id)
+                    refreshed += 1
+            except Exception as exc:
+                failed.append('%s: %s' % (order.neto_order_id, exc))
+            if (refreshed + len(failed)) % 20 == 0:
+                self.env.cr.commit()
+        return refreshed, failed
+
     def _process_job(self):
         self.ensure_one()
         if self.state == 'cancelled':
@@ -165,6 +194,15 @@ class NetoHistoryImportJob(models.Model):
                     should_stop=self._cancel_requested,
                     update_cursor=False,
                 )
+
+            if self._cancel_requested():
+                self._finish_cancelled()
+                return
+
+            orders_refreshed = 0
+            order_refresh_failures = []
+            if self.refresh_existing_orders:
+                orders_refreshed, order_refresh_failures = self._refresh_existing_orders(connector)
 
             if self._cancel_requested():
                 self._finish_cancelled()
@@ -219,6 +257,8 @@ class NetoHistoryImportJob(models.Model):
                 'state': 'done',
                 'finished_at': fields.Datetime.now(),
                 'orders_after': orders_after,
+                'orders_refreshed': orders_refreshed,
+                'orders_refresh_failed': len(order_refresh_failures),
                 'payments_after': payments_after,
                 'payments_processed': payments_processed,
                 'payments_relinked': payments_relinked,
@@ -226,6 +266,8 @@ class NetoHistoryImportJob(models.Model):
                 'rmas_processed': rmas_processed,
                 'result_message': _(
                     'Orders: %(orders_before)s -> %(orders_after)s. '
+                    'Existing orders refreshed: %(orders_refreshed)s. '
+                    'Existing order refresh failures: %(orders_refresh_failed)s. '
                     'Payments: %(payments_before)s -> %(payments_after)s. '
                     'Payment rows processed: %(payments_processed)s. '
                     'Orphan payments relinked: %(payments_relinked)s. '
@@ -234,6 +276,8 @@ class NetoHistoryImportJob(models.Model):
                 ) % {
                     'orders_before': vals['orders_before'],
                     'orders_after': orders_after,
+                    'orders_refreshed': orders_refreshed,
+                    'orders_refresh_failed': len(order_refresh_failures),
                     'payments_before': vals['payments_before'],
                     'payments_after': payments_after,
                     'payments_processed': payments_processed,
@@ -243,6 +287,8 @@ class NetoHistoryImportJob(models.Model):
                     'rmas_processed': rmas_processed,
                 },
             })
+            if order_refresh_failures:
+                vals['error_message'] = '\n'.join(order_refresh_failures[:100])
             self.write(vals)
             self.env.cr.commit()
         except Exception as exc:

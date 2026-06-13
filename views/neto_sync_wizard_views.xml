@@ -89,6 +89,7 @@
                            placeholder="To date/time (UTC)"/>
                     <field name="chunk_days"/>
                     <field name="queue_orders"/>
+                    <field name="queue_refresh_existing_orders"/>
                     <field name="queue_payments"/>
                     <field name="queue_rmas"/>
                     <field name="import_as_history"/>
