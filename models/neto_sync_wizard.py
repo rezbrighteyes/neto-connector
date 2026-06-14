@@ -174,7 +174,11 @@ class NetoSyncWizard(models.TransientModel):
 
     def _sync_single_order(self, store, order_id):
         existing = self.env['sale.order'].sudo().search(
-            [('neto_order_id', '=', order_id)], limit=1
+            [
+                ('neto_order_id', '=', order_id),
+                ('company_id', '=', store.company_id.id),
+            ],
+            limit=1,
         )
 
         if existing and not self.force_resync:
@@ -207,7 +211,11 @@ class NetoSyncWizard(models.TransientModel):
         self.env.cr.commit()
 
         sale_order = self.env['sale.order'].sudo().search(
-            [('neto_order_id', '=', order_id)], limit=1
+            [
+                ('neto_order_id', '=', order_id),
+                ('company_id', '=', store.company_id.id),
+            ],
+            limit=1,
         )
 
         if sale_order:

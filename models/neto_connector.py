@@ -1696,7 +1696,11 @@ class NetoConnector(models.AbstractModel):
             if order_id in synced_ids:
                 return
             existing_order = self.env['sale.order'].sudo().search(
-                [('neto_order_id', '=', order_id)], limit=1
+                [
+                    ('neto_order_id', '=', order_id),
+                    ('company_id', '=', store.company_id.id),
+                ],
+                limit=1,
             )
             if existing_order:
                 updated_fields = self._patch_existing_order_from_neto(
