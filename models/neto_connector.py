@@ -556,6 +556,21 @@ class NetoConnector(models.AbstractModel):
 
         product_name = f"{base_name} {_NETO_UNSYNCED_SUFFIX}"
 
+        existing_placeholder = Product.with_context(active_test=False).search([
+            ('default_code', '=', sku),
+            ('name', 'ilike', _NETO_UNSYNCED_SUFFIX),
+        ], order='active desc, id', limit=1)
+        if existing_placeholder:
+            _logger.warning(
+                'Neto sync: SKU=%s could not be safely matched; reusing existing '
+                '[NETO-UNSYNCED] placeholder product %s instead of creating another one',
+                sku,
+                existing_placeholder.id,
+            )
+            product = self._prepare_product_for_store_company(existing_placeholder, store)
+            if product:
+                return product, False
+
         list_price = 0.0
         if item:
             raw_price = float(item.get('DefaultPrice') or 0)
