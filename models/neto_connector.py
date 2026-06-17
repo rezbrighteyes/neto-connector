@@ -104,6 +104,23 @@ class NetoConnector(models.AbstractModel):
     # Helpers
     # -------------------------------------------------------------------------
 
+    def _neto_silent_context(self):
+        """Context used by Neto sync jobs to avoid user-facing notifications."""
+        return {
+            'mail_notrack': True,
+            'mail_create_nolog': True,
+            'mail_create_nosubscribe': True,
+            'mail_post_autofollow': False,
+            'mail_auto_subscribe_no_notify': True,
+            'mail_notify_force_send': False,
+            'mail_notify_noemail': True,
+            'tracking_disable': True,
+            'neto_skip_chatter_post': True,
+        }
+
+    def _neto_silent(self, record):
+        return record.with_context(**self._neto_silent_context())
+
     def _parse_neto_datetime(self, raw):
         """Return a naive UTC datetime from a Neto date string, or False."""
         if not raw:
@@ -392,7 +409,7 @@ class NetoConnector(models.AbstractModel):
             store.name,
             store.company_id.display_name,
         )
-        partner.sudo().write({'company_id': False})
+        self._neto_silent(partner.sudo()).write({'company_id': False})
         return partner
 
     # -------------------------------------------------------------------------
@@ -853,7 +870,7 @@ class NetoConnector(models.AbstractModel):
         vals = self._prepare_payment_vals(store, payment_data)
         existing = Payment.search([('neto_payment_id', '=', neto_payment_id)], limit=1)
         if existing:
-            existing.write(vals)
+            self._neto_silent(existing).write(vals)
             return existing
         return Payment.create(vals)
 
@@ -1007,7 +1024,8 @@ class NetoConnector(models.AbstractModel):
                     [('email', '=ilike', manager_email)], limit=1
                 )
                 if user:
-                    vals['user_id'] = user.id
+                    if partner.user_id != user:
+                        vals['user_id'] = user.id
                 else:
                     _logger.warning(
                         'Neto sync: account manager email "%s" not found for username %s — leaving unchanged',
@@ -1026,7 +1044,7 @@ class NetoConnector(models.AbstractModel):
                 vals['active'] = str(active).strip().lower() in ('true', '1', 'yes')
 
         try:
-            partner.sudo().write(vals)
+            self._neto_silent(partner.sudo()).write(vals)
             _logger.info('Neto sync: GetCustomer synced for username %s', username)
         except Exception as exc:
             _logger.warning(
@@ -1529,8 +1547,8 @@ class NetoConnector(models.AbstractModel):
                 '{items}</ul>'
             ).format(items=note_items))
 
-        if msg_parts:
-            order.sudo().message_post(body=Markup('').join(msg_parts))
+        if msg_parts and not self.env.context.get('neto_skip_chatter_post'):
+            self._neto_silent(order.sudo()).message_post(body=Markup('').join(msg_parts))
 
         return order, missing_lines
 
@@ -1662,8 +1680,8 @@ class NetoConnector(models.AbstractModel):
                 added.extend({
                     'sku': line.product_id.default_code or line.name,
                 } for line in total_lines)
-            if added:
-                order.sudo().message_post(body=Markup(
+            if added and not self.env.context.get('neto_skip_chatter_post'):
+                self._neto_silent(order.sudo()).message_post(body=Markup(
                     '<p>&#9989; <strong>Repaired Neto order lines/totals:</strong> {skus}</p>'
                 ).format(skus=', '.join(a['sku'] for a in added)))
             log.write({
@@ -1809,7 +1827,7 @@ class NetoConnector(models.AbstractModel):
         update_cursor=True,
     ):
         # Suppress all email notifications during sync
-        self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
+        self = self.with_context(**self._neto_silent_context())
         if self._disable_unsafe_temp_history_cron():
             return
         if not store.api_key or not store.store_url:
@@ -2452,8 +2470,8 @@ class NetoConnector(models.AbstractModel):
                     '<p>&#8505;&#65039; <strong>Neto RMA notes:</strong></p>'
                     '<ul>{items}</ul>'
                 ).format(items=items))
-            if msg_parts and is_new_credit_note:
-                credit_note.sudo().message_post(body=Markup('').join(msg_parts))
+            if msg_parts and is_new_credit_note and not self.env.context.get('neto_skip_chatter_post'):
+                self._neto_silent(credit_note.sudo()).message_post(body=Markup('').join(msg_parts))
 
             RmaLog.upsert_for_rma(store, rma_id, {
                 **base_vals,
@@ -2479,6 +2497,7 @@ class NetoConnector(models.AbstractModel):
             })
 
     def _sync_single_order_by_id(self, store, order_id, import_as_history=False):
+        self = self.with_context(**self._neto_silent_context())
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -2520,7 +2539,7 @@ class NetoConnector(models.AbstractModel):
     def _sync_rmas(
         self, store, since_dt, until_dt=None, should_stop=None, import_as_history=False,
     ):
-        self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
+        self = self.with_context(**self._neto_silent_context())
         _logger.info('Neto RMA sync [%s]: starting from %s', store.name, since_dt)
         try:
             rmas, fetch_complete = self._fetch_rmas(store, since_dt, until_dt=until_dt)

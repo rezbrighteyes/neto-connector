@@ -1235,7 +1235,17 @@ class NetoConnector(models.AbstractModel):
         return matched_ids, self._collect_active_signatures(items)
 
     def _sync_product_stock_store(self, store):
-        self = self.with_context(mail_notrack=True, mail_create_nosubscribe=True, tracking_disable=True)
+        self = self.with_context(
+            mail_notrack=True,
+            mail_create_nolog=True,
+            mail_create_nosubscribe=True,
+            mail_post_autofollow=False,
+            mail_auto_subscribe_no_notify=True,
+            mail_notify_force_send=False,
+            mail_notify_noemail=True,
+            tracking_disable=True,
+            neto_skip_chatter_post=True,
+        )
         store_name = store.name
         if not store.api_key or not store.store_url:
             _logger.warning(
