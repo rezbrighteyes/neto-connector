@@ -110,17 +110,12 @@ def _get_neto_generic_barcode(item):
 
 def _get_neto_reference_candidates(item):
     values = []
-    for raw in (
-        item.get('SKU'),
-        _get_neto_individual_barcode(item),
-        _get_neto_generic_barcode(item),
-    ):
-        raw = (raw or '').strip()
-        if raw and raw != '0' and raw not in values:
-            values.append(raw)
-        normalized = _strip_leading_zeroes(raw)
-        if normalized and normalized != '0' and normalized not in values:
-            values.append(normalized)
+    raw = (item.get('SKU') or '').strip()
+    if raw and raw != '0':
+        values.append(raw)
+    normalized = _strip_leading_zeroes(raw)
+    if normalized and normalized != '0' and normalized not in values:
+        values.append(normalized)
     return values
 
 
@@ -604,27 +599,22 @@ class NetoConnector(models.AbstractModel):
             ], limit=1)
             if product:
                 return product, False
-            products = Product.search([('neto_product_id', '=', neto_product_id)])
-            matched, conflict = self._select_active_unique_match(products)
-            if matched:
-                return matched, False
-            if conflict:
+            if Product.search([('neto_product_id', '=', neto_product_id)], limit=1):
                 _logger.info(
-                    'Neto product sync: ignoring shared Neto product ID %s matched to %d product(s)',
-                    neto_product_id, len(products),
+                    'Neto product sync: Neto product ID %s exists outside store %s; '
+                    'not using it as a cross-store product match',
+                    neto_product_id, store.display_name,
                 )
-                return False, True
-            if 'external_api_id' in Product._fields and neto_product_id.isdigit():
-                products = Product.search([('external_api_id', '=', int(neto_product_id))])
-                matched, conflict = self._select_active_unique_match(products)
-                if matched:
-                    return matched, False
-                if conflict:
-                    _logger.info(
-                        'Neto product sync: ignoring shared external API ID %s matched to %d product(s)',
-                        neto_product_id, len(products),
-                    )
-                    return False, True
+            if (
+                'external_api_id' in Product._fields
+                and neto_product_id.isdigit()
+                and Product.search([('external_api_id', '=', int(neto_product_id))], limit=1)
+            ):
+                _logger.info(
+                    'Neto product sync: external API ID %s exists outside store %s; '
+                    'not using it as a cross-store product match',
+                    neto_product_id, store.display_name,
+                )
         for sku_variant in sku_variants:
             link = ProductLink.search([
                 ('store_id', '=', store.id),
@@ -653,11 +643,13 @@ class NetoConnector(models.AbstractModel):
                     saw_ambiguous_sku_match = True
         barcode_domains = self._get_barcode_match_domains(Product, item)
         if barcode_domains:
-            matched, conflict = self._match_by_barcode_candidates(Product, barcode_domains)
-            if matched:
-                return matched, False
-            if conflict:
-                return False, True
+            for field_name, barcode in barcode_domains:
+                if Product.search([(field_name, '=', barcode)], limit=1):
+                    _logger.info(
+                        'Neto product sync: %s %s exists but is not used as a product match '
+                        'without an exact Neto link or SKU/reference match',
+                        field_name, barcode,
+                    )
         if saw_ambiguous_sku_match:
             return False, True
         return False, False
