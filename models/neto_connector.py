@@ -500,11 +500,26 @@ class NetoConnector(models.AbstractModel):
         return product.with_company(store.company_id)
 
     def _get_or_create_product_from_neto(self, store, sku, line_data):
-        """Look up SKU in Odoo; if missing, call GetItem and create a placeholder product.
+        """Resolve a Neto order-line product, preferring store-specific Neto identity.
 
         Returns (product, was_created).
         """
         Product = self.env['product.product'].sudo()
+        item = self._fetch_neto_item(store, sku)
+
+        if item and hasattr(self, '_match_existing_product'):
+            product, conflict = self._match_existing_product(store, item)
+            if product:
+                product = self._prepare_product_for_store_company(product, store)
+                if product:
+                    return product, False
+            if conflict:
+                _logger.warning(
+                    'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
+                    'creating [NETO-UNSYNCED] placeholder to preserve the order line',
+                    sku,
+                )
+
         conflict_on_default_code = False
         products = Product.search([('default_code', '=', sku)])
         if hasattr(self, '_select_active_unique_match'):
@@ -518,23 +533,15 @@ class NetoConnector(models.AbstractModel):
             if product:
                 return product, False
 
-        item = self._fetch_neto_item(store, sku)
         if item:
-            if hasattr(self, '_match_existing_product'):
-                product, conflict = self._match_existing_product(store, item)
-                if product:
-                    product = self._prepare_product_for_store_company(product, store)
-                    if product:
-                        return product, False
-                if conflict:
-                    _logger.warning(
-                        'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
-                        'creating [NETO-UNSYNCED] placeholder to preserve the order line',
-                        sku,
-                    )
             neto_barcode = (item.get('UPC') or '').strip()
             if neto_barcode:
-                product = Product.search([('barcode', '=', neto_barcode)], limit=1)
+                products = Product.search([('barcode', '=', neto_barcode)])
+                if hasattr(self, '_select_barcode_match'):
+                    product, barcode_conflict = self._select_barcode_match(products)
+                else:
+                    product = products if len(products) == 1 else False
+                    barcode_conflict = len(products) > 1
                 if product:
                     _logger.info(
                         'Neto sync: SKU=%s matched existing product "%s" via barcode %s',
@@ -543,6 +550,11 @@ class NetoConnector(models.AbstractModel):
                     product = self._prepare_product_for_store_company(product, store)
                     if product:
                         return product, False
+                if barcode_conflict:
+                    _logger.info(
+                        'Neto sync: ignoring barcode %s for SKU=%s because it matches %d products',
+                        neto_barcode, sku, len(products),
+                    )
             neto_generic_barcode = (item.get('UPC1') or '').strip()
             if neto_generic_barcode and 'reza_generic_barcode' in Product._fields:
                 product = Product.search([
