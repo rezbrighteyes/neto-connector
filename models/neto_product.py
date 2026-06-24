@@ -2,6 +2,7 @@
 import json
 import logging
 import time
+from difflib import SequenceMatcher
 
 from psycopg2 import errors as pg_errors
 import requests
@@ -98,6 +99,18 @@ def _normalize_identifier(value):
     if not value:
         return ''
     return _strip_leading_zeroes(value)
+
+
+def _normalize_name(value):
+    return ' '.join((value or '').lower().replace('|', ' ').replace('/', ' ').split())
+
+
+def _name_similarity(left, right):
+    left = _normalize_name(left)
+    right = _normalize_name(right)
+    if not left or not right:
+        return 1.0
+    return SequenceMatcher(None, left, right).ratio()
 
 
 def _get_neto_individual_barcode(item):
@@ -579,6 +592,16 @@ class NetoConnector(models.AbstractModel):
                 )
         return False, False
 
+    def _is_linked_product_compatible_with_item(self, product, item):
+        sku = (item.get('SKU') or '').strip()
+        sku_variants = _get_sku_variants(sku)
+        default_code = (product.default_code or '').strip()
+        if sku_variants and default_code and default_code not in sku_variants:
+            return False
+        if not product.active and _name_similarity(item.get('Name'), product.display_name) < 0.35:
+            return False
+        return True
+
     def _match_existing_product(self, store, item):
         Product = self.env['product.product'].sudo().with_context(active_test=False)
         ProductLink = self.env['neto.product.link'].sudo()
@@ -592,7 +615,13 @@ class NetoConnector(models.AbstractModel):
                 ('neto_product_id', '=', neto_product_id),
             ], limit=1)
             if link:
-                return link.product_id, False
+                if self._is_linked_product_compatible_with_item(link.product_id, item):
+                    return link.product_id, False
+                _logger.info(
+                    'Neto product sync: existing link %s for store %s points to incompatible '
+                    'product %s; rematching SKU=%s Neto ID=%s',
+                    link.id, store.display_name, link.product_id.display_name, sku, neto_product_id,
+                )
             product = Product.search([
                 ('neto_store_id', '=', store.id),
                 ('neto_product_id', '=', neto_product_id),
@@ -621,7 +650,13 @@ class NetoConnector(models.AbstractModel):
                 ('neto_sku', '=', sku_variant),
             ], limit=1)
             if link:
-                return link.product_id, False
+                if self._is_linked_product_compatible_with_item(link.product_id, item):
+                    return link.product_id, False
+                _logger.info(
+                    'Neto product sync: existing SKU link %s for store %s points to incompatible '
+                    'product %s; rematching SKU=%s',
+                    link.id, store.display_name, link.product_id.display_name, sku_variant,
+                )
         reference_candidates = _get_neto_reference_candidates(item)
         for sku_variant in sku_variants:
             if sku_variant not in reference_candidates:
