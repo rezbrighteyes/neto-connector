@@ -12,15 +12,25 @@ from odoo.exceptions import ValidationError
 
 _logger = logging.getLogger(__name__)
 
+
+class NetoApiError(Exception):
+    """Neto answered with HTTP 200 but Ack='Error'. Raised so a soft API failure
+    can never be mistaken for an empty result set."""
+
+
 _GST_DIVISOR = 1.1
 _PRODUCT_PAGE_SIZE = 100
 _PRODUCT_WRITE_BATCH_SIZE = 50
 _SALEABLE_CATEGORY_ROOT = ('All', 'Saleable')
 _CATCHALL_CATEGORY_NAME = 'Neto'
 _GLE_REVIEW_TAG = 'pricing-needs-review'
-_NETO_VARIANT_ATTRIBUTE = 'Neto Variant SKU'
 _EDBERT_COMPANY_ID = 1
-_PRODUCT_OUTPUT_SELECTOR = [
+
+# Neto only returns what you ask for, and it rejects the WHOLE request with
+# Ack='Error' (over HTTP 200) if any OutputSelector name is unknown. These are the
+# selectors this connector has been running in production against both stores.
+# Do not add to this list without confirming the name against the live API.
+_PRODUCT_OUTPUT_SELECTOR_CORE = [
     'ID',
     'InventoryID',
     'SKU',
@@ -45,6 +55,35 @@ _PRODUCT_OUTPUT_SELECTOR = [
     'Brand',
 ]
 
+# Reference-only extras, mirrored onto neto.product.link and never mapped to an
+# Odoo field. UNVERIFIED against the live API. _fetch_all_products probes this
+# list with a 1-item request before each run; if Neto rejects it, the run falls
+# back to the core list and logs which selectors were dropped, so a wrong name
+# here costs empty reference fields, never a failed or empty sync.
+_PRODUCT_OUTPUT_SELECTOR_EXTRA = [
+    'Subtitle',
+    'PromotionPrice',
+    'ShippingWeight',
+    'ShippingHeight',
+    'ShippingWidth',
+    'ShippingLength',
+    'CubicWeight',
+    'PrimarySupplier',
+    'SupplierItemCode',
+    'Description',
+    'ShortDescription',
+    'ItemSpecifics',
+    'SearchKeywords',
+    'SEOPageTitle',
+    'SEOMetaDescription',
+    'DateAdded',
+    'DateUpdated',
+    'Approved',
+    'Virtual',
+]
+
+_PRODUCT_OUTPUT_SELECTOR = _PRODUCT_OUTPUT_SELECTOR_CORE + _PRODUCT_OUTPUT_SELECTOR_EXTRA
+
 
 def _strip_leading_zeroes(value):
     value = (value or '').strip()
@@ -58,6 +97,35 @@ def _to_float(value):
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _to_bool(value):
+    """Neto returns booleans as the strings 'True'/'False'. Plain bool('False')
+    is True, so every one of these fields would read as set."""
+    if isinstance(value, bool):
+        return value
+    return str(value or '').strip().lower() in ('true', '1', 'y', 'yes')
+
+
+def _clean_str(value):
+    if value in (None, '', [], {}):
+        return False
+    return str(value).strip() or False
+
+
+def _dump_json(value, pretty=False):
+    """Categories/PriceGroups/Specifications come back as nested dicts or lists.
+    Store them as JSON rather than str(dict), which is not machine-readable."""
+    if value in (None, '', [], {}):
+        return False
+    if isinstance(value, str):
+        return value.strip() or False
+    try:
+        if pretty:
+            return json.dumps(value, indent=2, sort_keys=True, default=str)
+        return json.dumps(value, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _to_optional_float(value):
@@ -136,6 +204,19 @@ class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
     neto_parent_sku = fields.Char(string='Neto Parent SKU', copy=False, index=True)
+    # The catalogue is flat -- one variant per template -- so the template's links
+    # are its single variant's links. Exposed here because the template form is
+    # what people actually open.
+    neto_product_link_ids = fields.One2many(
+        'neto.product.link',
+        string='Neto Links',
+        compute='_compute_neto_product_link_ids',
+    )
+
+    @api.depends('product_variant_ids.neto_product_link_ids')
+    def _compute_neto_product_link_ids(self):
+        for template in self:
+            template.neto_product_link_ids = template.product_variant_ids.neto_product_link_ids
 
 
 class ProductProduct(models.Model):
@@ -165,6 +246,18 @@ class ProductProduct(models.Model):
         readonly=True,
     )
     neto_product_sync_note = fields.Char(string='Neto Product Sync Note', copy=False, readonly=True)
+    # Order sync creates a product when an order line references a SKU that product
+    # sync has not mapped yet. This used to be signalled by appending
+    # '[NETO-UNSYNCED]' to the product name, which polluted every quote, invoice and
+    # picking the product appeared on. The provenance now lives here instead.
+    neto_auto_created_from_order = fields.Boolean(
+        string='Auto-created from Neto Order',
+        copy=False,
+        readonly=True,
+        index=True,
+        help='Created by order sync because no product matched the Neto SKU. '
+             'Review its price, category and tax before trusting it.',
+    )
     neto_available_sell_quantity = fields.Float(
         string='Neto Available Sell Qty',
         copy=False,
@@ -204,14 +297,65 @@ class NetoProductLink(models.Model):
         store=True,
         index=True,
     )
+    # --- identity (the reason this model exists) ---------------------------
+    # Neto product IDs are per-store: Liaise and Global give different IDs to the
+    # same physical item. unique(store_id, neto_product_id) below is the only
+    # trustworthy Neto<->Odoo key. Never key on SKU or barcode.
     neto_product_id = fields.Char(string='Neto Product ID', index=True)
     neto_sku = fields.Char(string='Neto SKU', index=True)
     neto_barcode = fields.Char(string='Neto Barcode', index=True)
     neto_generic_barcode = fields.Char(string='Neto Generic Barcode', index=True)
     neto_parent_sku = fields.Char(string='Neto Parent SKU', index=True)
+    neto_is_variant = fields.Boolean(string='Is Variant in Neto')
+    neto_reference_number = fields.Char(string='Neto Reference Number')
+
+    # --- naming / classification -------------------------------------------
     neto_name = fields.Char(string='Neto Name')
+    neto_subtitle = fields.Char(string='Neto Subtitle')
     neto_model = fields.Char(string='Neto Model')
     neto_brand = fields.Char(string='Neto Brand')
+    neto_categories = fields.Text(string='Neto Categories')
+
+    # --- pricing (reference only; Odoo pricing is set elsewhere) ------------
+    neto_default_price = fields.Float(string='Neto Default Price')
+    neto_rrp = fields.Float(string='Neto RRP')
+    neto_cost_price = fields.Float(string='Neto Cost Price')
+    neto_purchase_price = fields.Float(string='Neto Purchase Price')
+    neto_promotion_price = fields.Float(string='Neto Promotion Price')
+    neto_tax_inclusive = fields.Boolean(string='Neto Price Tax Inclusive')
+    neto_price_groups_json = fields.Text(string='Neto Price Groups JSON')
+
+    # --- logistics ----------------------------------------------------------
+    neto_shipping_weight = fields.Float(string='Neto Shipping Weight')
+    neto_shipping_height = fields.Float(string='Neto Shipping Height')
+    neto_shipping_width = fields.Float(string='Neto Shipping Width')
+    neto_shipping_length = fields.Float(string='Neto Shipping Length')
+    neto_cubic_weight = fields.Float(string='Neto Cubic Weight')
+
+    # --- supply -------------------------------------------------------------
+    neto_primary_supplier = fields.Char(string='Neto Primary Supplier')
+    neto_supplier_item_code = fields.Char(string='Neto Supplier Item Code')
+
+    # --- content ------------------------------------------------------------
+    neto_description = fields.Html(string='Neto Description', sanitize=False)
+    neto_short_description = fields.Html(string='Neto Short Description', sanitize=False)
+    # ItemSpecifics comes back as name/value pairs, not HTML. Stored as JSON.
+    neto_specifications = fields.Text(string='Neto Item Specifics (JSON)')
+    neto_search_keywords = fields.Text(string='Neto Search Keywords')
+    neto_seo_page_title = fields.Char(string='Neto SEO Page Title')
+    neto_seo_meta_description = fields.Text(string='Neto SEO Meta Description')
+
+    # --- audit --------------------------------------------------------------
+    neto_date_added = fields.Char(string='Neto Date Added')
+    neto_date_updated = fields.Char(string='Neto Date Updated')
+    neto_approved = fields.Boolean(string='Approved in Neto')
+    neto_virtual = fields.Boolean(string='Virtual in Neto')
+
+    # Verbatim GetItem response for this item. The typed fields above are a
+    # convenience; this is the source of truth when Neto adds a field we do not
+    # model yet, or when a value needs to be argued about after the fact.
+    neto_raw_json = fields.Text(string='Neto Raw JSON')
+
     is_active = fields.Boolean(string='Active in Neto', default=True)
     available_sell_quantity = fields.Float(string='Available Sell Qty')
     warehouse_quantity_json = fields.Text(string='Warehouse Quantity JSON')
@@ -274,6 +418,19 @@ class NetoProductSyncLog(models.Model):
 class NetoConnector(models.AbstractModel):
     _inherit = 'neto.connector'
 
+    def _check_neto_ack(self, body):
+        """Neto signals failure with Ack='Error' inside an HTTP 200 body. Without
+        this check an API error is indistinguishable from an empty catalogue --
+        and an empty catalogue makes _zero_absent_store_stock zero every product
+        in the store."""
+        if not isinstance(body, dict):
+            raise NetoApiError('Neto returned a non-object response: %r' % (body,))
+        payload = body.get('GetItemResponse', body)
+        ack = str(payload.get('Ack') or '').strip().lower()
+        if ack == 'error':
+            messages = payload.get('Messages') or body.get('Messages') or {}
+            raise NetoApiError('Neto GetItem returned Ack=Error: %s' % json.dumps(messages, default=str))
+
     def _extract_items_from_getitem_response(self, body):
         if not isinstance(body, dict):
             return []
@@ -285,7 +442,8 @@ class NetoConnector(models.AbstractModel):
             items = [items]
         return items or []
 
-    def _fetch_products_page(self, store, page=1, limit=_PRODUCT_PAGE_SIZE, active_filter='True'):
+    def _fetch_products_page(self, store, page=1, limit=_PRODUCT_PAGE_SIZE, active_filter='True',
+                             output_selector=None):
         url = f"{store.store_url.rstrip('/')}/do/WS/NetoAPI"
         headers = {
             'Content-Type': 'application/json',
@@ -297,7 +455,7 @@ class NetoConnector(models.AbstractModel):
             'Filter': {
                 'Page': page,
                 'Limit': limit,
-                'OutputSelector': _PRODUCT_OUTPUT_SELECTOR,
+                'OutputSelector': output_selector or _PRODUCT_OUTPUT_SELECTOR,
             }
         }
         if active_filter in ('True', 'False'):
@@ -305,6 +463,7 @@ class NetoConnector(models.AbstractModel):
         response = requests.post(url, json=payload, headers=headers, timeout=90)
         response.raise_for_status()
         body = response.json()
+        self._check_neto_ack(body)
         return self._extract_items_from_getitem_response(body)
 
     def _fetch_all_products(self, store, include_active=True, include_inactive=False):
@@ -314,11 +473,25 @@ class NetoConnector(models.AbstractModel):
             active_filters.append('True')
         if include_inactive:
             active_filters.append('False')
+        # Probe the extended selector list once. If Neto rejects it, fall back to
+        # the core list rather than letting one unknown field name abort the sync.
+        selector = _PRODUCT_OUTPUT_SELECTOR
+        try:
+            self._fetch_products_page(store, page=1, limit=1, active_filter='True',
+                                      output_selector=selector)
+        except NetoApiError as exc:
+            _logger.warning(
+                'Neto product sync [%s]: extended OutputSelector rejected (%s). '
+                'Falling back to the core selector list; reference fields %s will be empty.',
+                store.name, exc, ', '.join(_PRODUCT_OUTPUT_SELECTOR_EXTRA),
+            )
+            selector = _PRODUCT_OUTPUT_SELECTOR_CORE
         for active_filter in active_filters:
             page = 1
             while True:
                 chunk = self._fetch_products_page(
-                    store, page=page, limit=_PRODUCT_PAGE_SIZE, active_filter=active_filter
+                    store, page=page, limit=_PRODUCT_PAGE_SIZE, active_filter=active_filter,
+                    output_selector=selector,
                 )
                 if not chunk:
                     break
@@ -602,6 +775,51 @@ class NetoConnector(models.AbstractModel):
             return False
         return True
 
+    def _neto_company_domain(self, store):
+        """Domain restricting product matches to shared products or the store's
+        own company. Neto product IDs / SKUs are per-store, and Edbert / Liaise /
+        Global share one database, so a SKU-only fallback must never bind to
+        another company's product."""
+        company = store.company_id
+        if not company:
+            return []
+        return ['|', ('company_id', '=', False), ('company_id', '=', company.id)]
+
+    def _match_stored_product_by_sku(self, store, sku):
+        """Match an already-mapped Odoo product for a Neto SKU using ONLY data
+        stored in Odoo (no live Neto API call). Store/company scoped. Returns an
+        empty recordset when there is no unambiguous stored match."""
+        Product = self.env['product.product'].sudo().with_context(active_test=False)
+        sku = (sku or '').strip()
+        if not sku:
+            return Product.browse()
+        ProductLink = self.env['neto.product.link'].sudo()
+        sku_variants = _get_sku_variants(sku)
+        # 1. Store-scoped Neto SKU link — authoritative mapping.
+        for sku_variant in sku_variants:
+            link = ProductLink.search([
+                ('store_id', '=', store.id),
+                ('neto_sku', '=', sku_variant),
+            ], limit=1)
+            if link and link.product_id:
+                return link.product_id
+        # 2. Company-scoped reference fallback (never cross-company).
+        company_domain = self._neto_company_domain(store)
+        for sku_variant in sku_variants:
+            products = Product.search([('default_code', '=', sku_variant)] + company_domain)
+            matched, _conflict = self._select_active_unique_match(products)
+            if matched:
+                return matched
+        if 'x_studio_neto_reference' in Product._fields:
+            for sku_variant in sku_variants:
+                products = Product.search(
+                    [('x_studio_neto_reference', '=', sku_variant)] + company_domain
+                )
+                matched, _conflict = self._select_active_unique_match(products)
+                if matched:
+                    return matched
+        return Product.browse()
+
     def _match_existing_product(self, store, item):
         Product = self.env['product.product'].sudo().with_context(active_test=False)
         ProductLink = self.env['neto.product.link'].sudo()
@@ -661,8 +879,9 @@ class NetoConnector(models.AbstractModel):
         for sku_variant in sku_variants:
             if sku_variant not in reference_candidates:
                 reference_candidates.append(sku_variant)
+        company_domain = self._neto_company_domain(store)
         for reference in reference_candidates:
-            products = Product.search([('default_code', '=', reference)])
+            products = Product.search([('default_code', '=', reference)] + company_domain)
             matched, conflict = self._select_active_unique_match(products)
             if matched:
                 return matched, False
@@ -670,7 +889,9 @@ class NetoConnector(models.AbstractModel):
                 saw_ambiguous_sku_match = True
         if 'x_studio_neto_reference' in Product._fields:
             for sku_variant in sku_variants:
-                products = Product.search([('x_studio_neto_reference', '=', sku_variant)])
+                products = Product.search(
+                    [('x_studio_neto_reference', '=', sku_variant)] + company_domain
+                )
                 matched, conflict = self._select_active_unique_match(products)
                 if matched:
                     return matched, False
@@ -738,83 +959,22 @@ class NetoConnector(models.AbstractModel):
         else:
             PricelistItem.create(values)
 
-    def _get_variant_attribute(self):
-        Attribute = self.env['product.attribute'].sudo()
-        attribute = Attribute.search([('name', '=', _NETO_VARIANT_ATTRIBUTE)], limit=1)
-        if not attribute:
-            attribute = Attribute.create({
-                'name': _NETO_VARIANT_ATTRIBUTE,
-                'create_variant': 'always',
-            })
-        return attribute
-
-    def _get_or_create_parent_template(self, store, item, category):
-        ProductTemplate = self.env['product.template'].sudo()
-        parent_sku = (item.get('ParentSKU') or '').strip()
-        template = ProductTemplate.search([
-            ('neto_parent_sku', '=', parent_sku),
-            ('company_ids', 'in', [store.company_id.id]),
-        ], limit=1)
-        if template:
-            return template
-        template = ProductTemplate.create({
-            'name': (item.get('Name') or parent_sku or 'Neto Product').strip(),
-            'categ_id': category.id,
-            'company_ids': [(4, _EDBERT_COMPANY_ID), (4, store.company_id.id)],
-            'neto_parent_sku': parent_sku,
-            'sale_ok': True,
-            'purchase_ok': True,
-            'active': True,
-        })
-        return template
-
-    def _get_or_create_variant_product(self, store, template, item, category):
-        attribute = self._get_variant_attribute()
-        Value = self.env['product.attribute.value'].sudo()
-        sku = (item.get('SKU') or '').strip()
-        value = Value.search([
-            ('attribute_id', '=', attribute.id),
-            ('name', '=', sku),
-        ], limit=1)
-        if not value:
-            value = Value.create({
-                'attribute_id': attribute.id,
-                'name': sku,
-            })
-        line = template.attribute_line_ids.filtered(lambda record: record.attribute_id == attribute)
-        if line:
-            if value.id not in line.value_ids.ids:
-                line.write({'value_ids': [(4, value.id)]})
-        else:
-            template.write({
-                'attribute_line_ids': [(0, 0, {
-                    'attribute_id': attribute.id,
-                    'value_ids': [(6, 0, [value.id])],
-                })]
-            })
-        product = self.env['product.product'].sudo().search([
-            ('product_tmpl_id', '=', template.id),
-            ('product_template_attribute_value_ids.product_attribute_value_id', '=', value.id),
-        ], limit=1)
-        if not product:
-            # As a last resort, reuse the template's generated variant.
-            product = template.product_variant_ids[:1]
-        if category and template.categ_id != category:
-            template.write({'categ_id': category.id})
-        self._ensure_company_on_template(template, store.company_id)
-        return product
-
     def _get_or_create_product(self, store, item, category):
-        is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
-        parent_sku = (item.get('ParentSKU') or '').strip()
-        if is_variant and parent_sku and parent_sku != '0':
-            template = self._get_or_create_parent_template(store, item, category)
-            return self._get_or_create_variant_product(store, template, item, category), template
+        """Every Neto item becomes its own single-variant template.
+
+        Neto's ParentSKU / IsVariant do not describe an attribute axis: parents
+        group by model, by colourway, or by nothing at all (p_header lumps 35
+        unrelated display stands together), and the axis differs per store. Any
+        attempt to reconstruct Odoo attributes from them produced either a
+        SKU-as-attribute-value or phantom cartesian variants. They are kept as
+        reference data on neto.product.link instead, and never as structure.
+        """
         ProductTemplate = self.env['product.template'].sudo()
         template = ProductTemplate.create({
             'name': (item.get('Name') or item.get('SKU') or 'Neto Product').strip(),
             'categ_id': category.id,
             'company_ids': [(4, _EDBERT_COMPANY_ID), (4, store.company_id.id)],
+            'neto_parent_sku': (item.get('ParentSKU') or '').strip() or False,
             'sale_ok': True,
             'purchase_ok': True,
             'active': True,
@@ -831,7 +991,7 @@ class NetoConnector(models.AbstractModel):
             return str(value)
 
     def _prepare_product_link_values(self, store, product, item, reason=False):
-        return {
+        values = {
             'product_id': product.id,
             'store_id': store.id,
             'neto_product_id': (item.get('ID') or item.get('InventoryID') or '').strip() or False,
@@ -847,6 +1007,44 @@ class NetoConnector(models.AbstractModel):
             'warehouse_quantity_json': self._get_warehouse_quantity_json(item),
             'last_sync_date': fields.Datetime.now(),
             'last_sync_note': reason or False,
+        }
+        values.update(self._prepare_neto_reference_values(item))
+        return values
+
+    def _prepare_neto_reference_values(self, item):
+        """Neto fields kept verbatim for reference. None of these drive Odoo
+        behaviour -- they exist so a human can see what Neto actually said about
+        this product without opening the Neto admin."""
+        return {
+            'neto_is_variant': _to_bool(item.get('IsVariant')),
+            'neto_reference_number': _clean_str(item.get('ReferenceNumber')),
+            'neto_subtitle': _clean_str(item.get('Subtitle')),
+            'neto_categories': _dump_json(item.get('Categories')),
+            'neto_default_price': _to_float(item.get('DefaultPrice')),
+            'neto_rrp': _to_float(item.get('RRP')),
+            'neto_cost_price': _to_float(item.get('CostPrice')),
+            'neto_purchase_price': _to_float(item.get('DefaultPurchasePrice')),
+            'neto_promotion_price': _to_float(item.get('PromotionPrice')),
+            'neto_tax_inclusive': _to_bool(item.get('TaxInclusive')),
+            'neto_price_groups_json': _dump_json(item.get('PriceGroups')),
+            'neto_shipping_weight': _to_float(item.get('ShippingWeight')),
+            'neto_shipping_height': _to_float(item.get('ShippingHeight')),
+            'neto_shipping_width': _to_float(item.get('ShippingWidth')),
+            'neto_shipping_length': _to_float(item.get('ShippingLength')),
+            'neto_cubic_weight': _to_float(item.get('CubicWeight')),
+            'neto_primary_supplier': _clean_str(item.get('PrimarySupplier')),
+            'neto_supplier_item_code': _clean_str(item.get('SupplierItemCode')),
+            'neto_description': _clean_str(item.get('Description')),
+            'neto_short_description': _clean_str(item.get('ShortDescription')),
+            'neto_specifications': _dump_json(item.get('ItemSpecifics')),
+            'neto_search_keywords': _clean_str(item.get('SearchKeywords')),
+            'neto_seo_page_title': _clean_str(item.get('SEOPageTitle')),
+            'neto_seo_meta_description': _clean_str(item.get('SEOMetaDescription')),
+            'neto_date_added': _clean_str(item.get('DateAdded')),
+            'neto_date_updated': _clean_str(item.get('DateUpdated')),
+            'neto_approved': _to_bool(item.get('Approved')),
+            'neto_virtual': _to_bool(item.get('Virtual')),
+            'neto_raw_json': _dump_json(item, pretty=True),
         }
 
     def _upsert_product_link(self, store, product, item, reason=False):
@@ -1139,16 +1337,11 @@ class NetoConnector(models.AbstractModel):
         return product
 
     def _split_products(self, items):
-        standalones = []
-        variants = []
-        for item in items:
-            is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
-            parent_sku = (item.get('ParentSKU') or '').strip()
-            if is_variant and parent_sku and parent_sku != '0':
-                variants.append(item)
-            else:
-                standalones.append(item)
-        return standalones, variants
+        """Kept for API compatibility. The catalogue is flat: every Neto item is
+        its own product, so there is nothing to split. Variant children used to be
+        deferred to a second pass so their parent template existed first; with no
+        parent templates that ordering no longer matters."""
+        return list(items), []
 
     def _collect_active_signatures(self, items):
         signatures = {
@@ -1240,20 +1433,24 @@ class NetoConnector(models.AbstractModel):
         write_counter = 0
         for item in standalones + variants:
             try:
-                product = self._process_product_item(
-                    store, item, matched_ids, sync_stock=sync_stock
-                )
-                if product:
-                    write_counter += 1
-                    if write_counter % _PRODUCT_WRITE_BATCH_SIZE == 0:
-                        self.env.cr.commit()
+                with self.env.cr.savepoint():
+                    product = self._process_product_item(
+                        store, item, matched_ids, sync_stock=sync_stock
+                    )
             except Exception as exc:
+                # Savepoint rolls back the poisoned write, so the error log below
+                # runs on a healthy cursor and the rest of the store still syncs.
                 _logger.exception(
                     'Neto product sync [%s]: failed on SKU %s',
                     store.name, item.get('SKU'),
                 )
                 self._log_product_sync(store, item, 'error', reason=str(exc))
                 self.env.cr.commit()
+                continue
+            if product:
+                write_counter += 1
+                if write_counter % _PRODUCT_WRITE_BATCH_SIZE == 0:
+                    self.env.cr.commit()
         store.sudo().write({'last_product_sync_date': fields.Datetime.now()})
         _logger.info(
             'Neto product sync [%s]: completed — %d item(s), %d matched/created.',

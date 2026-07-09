@@ -28,35 +28,90 @@
             <form string="Neto Product Link">
                 <sheet>
                     <group>
-                        <group>
+                        <group string="Identity">
                             <field name="store_id"/>
                             <field name="company_id"/>
                             <field name="product_id"/>
-                            <field name="is_active"/>
-                        </group>
-                        <group>
-                            <field name="neto_sku"/>
                             <field name="neto_product_id"/>
-                            <field name="neto_parent_sku"/>
+                            <field name="neto_sku"/>
+                            <field name="neto_reference_number"/>
                         </group>
-                    </group>
-                    <group>
-                        <group>
-                            <field name="neto_barcode"/>
-                            <field name="neto_generic_barcode"/>
+                        <group string="Status">
+                            <field name="is_active"/>
+                            <field name="neto_approved"/>
+                            <field name="neto_virtual"/>
+                            <field name="neto_is_variant"/>
+                            <field name="neto_parent_sku"/>
                             <field name="available_sell_quantity"/>
                         </group>
-                        <group>
-                            <field name="neto_name"/>
-                            <field name="neto_model"/>
-                            <field name="neto_brand"/>
-                        </group>
                     </group>
-                    <group>
-                        <field name="last_sync_date"/>
-                        <field name="last_sync_note" widget="text"/>
-                        <field name="warehouse_quantity_json" widget="text"/>
-                    </group>
+                    <notebook>
+                        <page string="Details" name="neto_details">
+                            <group>
+                                <group string="Naming">
+                                    <field name="neto_name"/>
+                                    <field name="neto_subtitle"/>
+                                    <field name="neto_brand"/>
+                                    <field name="neto_model"/>
+                                </group>
+                                <group string="Barcodes">
+                                    <field name="neto_barcode"/>
+                                    <field name="neto_generic_barcode"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="Pricing (reference only)">
+                                    <field name="neto_default_price"/>
+                                    <field name="neto_rrp"/>
+                                    <field name="neto_cost_price"/>
+                                    <field name="neto_purchase_price"/>
+                                    <field name="neto_promotion_price"/>
+                                    <field name="neto_tax_inclusive"/>
+                                </group>
+                                <group string="Logistics">
+                                    <field name="neto_shipping_weight"/>
+                                    <field name="neto_shipping_height"/>
+                                    <field name="neto_shipping_width"/>
+                                    <field name="neto_shipping_length"/>
+                                    <field name="neto_cubic_weight"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="Supply">
+                                    <field name="neto_primary_supplier"/>
+                                    <field name="neto_supplier_item_code"/>
+                                </group>
+                                <group string="Audit">
+                                    <field name="neto_date_added"/>
+                                    <field name="neto_date_updated"/>
+                                    <field name="last_sync_date"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Content" name="neto_content">
+                            <group>
+                                <field name="neto_seo_page_title"/>
+                                <field name="neto_seo_meta_description" widget="text"/>
+                                <field name="neto_search_keywords" widget="text"/>
+                            </group>
+                            <separator string="Short Description"/>
+                            <field name="neto_short_description"/>
+                            <separator string="Description"/>
+                            <field name="neto_description"/>
+                            <separator string="Item Specifics"/>
+                            <field name="neto_specifications" widget="text" nolabel="1"/>
+                        </page>
+                        <page string="Raw Data" name="neto_raw">
+                            <group>
+                                <field name="neto_categories" widget="text"/>
+                                <field name="neto_price_groups_json" widget="text"/>
+                                <field name="warehouse_quantity_json" widget="text"/>
+                                <field name="last_sync_note" widget="text"/>
+                            </group>
+                            <separator string="Verbatim GetItem response"/>
+                            <field name="neto_raw_json" widget="text" nolabel="1"/>
+                        </page>
+                    </notebook>
                 </sheet>
             </form>
         </field>

@@ -8,6 +8,32 @@
             <xpath expr="//page[@name='general_information']//field[@name='categ_id']" position="after">
                 <field name="neto_parent_sku"/>
             </xpath>
+            <xpath expr="//notebook" position="inside">
+                <page string="Neto" name="neto_reference">
+                    <div class="alert alert-info" role="alert">
+                        Reference data pulled from Neto. One row per store: Liaise and
+                        Global issue different Neto product IDs for the same item.
+                        Nothing here drives Odoo behaviour.
+                    </div>
+                    <field name="neto_product_link_ids" readonly="1" nolabel="1">
+                        <list>
+                            <field name="store_id"/>
+                            <field name="company_id"/>
+                            <field name="neto_product_id"/>
+                            <field name="neto_sku"/>
+                            <field name="neto_barcode" optional="show"/>
+                            <field name="neto_brand" optional="show"/>
+                            <field name="neto_model" optional="hide"/>
+                            <field name="neto_parent_sku" optional="hide"/>
+                            <field name="neto_is_variant" optional="hide"/>
+                            <field name="neto_default_price" optional="hide"/>
+                            <field name="neto_rrp" optional="hide"/>
+                            <field name="is_active"/>
+                            <field name="last_sync_date"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
         </field>
     </record>
 </odoo>

@@ -28,7 +28,9 @@ _SKIP_SKU_PREFIXES = (
 )
 _NOTE_SKU_EXACT = frozenset({'TEXT_NOTE'})
 
-# Suffix appended to auto-created product names so they are easy to spot
+# Legacy marker. Auto-created products are no longer renamed -- the provenance
+# lives on product.product.neto_auto_created_from_order. Kept only so the reuse
+# lookup below still recognises placeholders created by earlier versions.
 _NETO_UNSYNCED_SUFFIX = '[NETO-UNSYNCED]'
 
 # Internal email domain — orders from this domain are synced but flagged
@@ -505,6 +507,18 @@ class NetoConnector(models.AbstractModel):
         Returns (product, was_created).
         """
         Product = self.env['product.product'].sudo()
+
+        # DB-first: honour an existing store/company product mapping before any
+        # live Neto GetItem call. A flaky or empty GetItem response must not
+        # bypass the neto.product.link table and fall through to a blind
+        # default_code match, which spawns duplicate auto-created products.
+        if hasattr(self, '_match_stored_product_by_sku'):
+            stored = self._match_stored_product_by_sku(store, sku)
+            if stored:
+                prepared = self._prepare_product_for_store_company(stored, store)
+                if prepared:
+                    return prepared, False
+
         item = self._fetch_neto_item(store, sku)
 
         if item and hasattr(self, '_match_existing_product'):
@@ -516,12 +530,13 @@ class NetoConnector(models.AbstractModel):
             if conflict:
                 _logger.warning(
                     'Neto sync: SKU=%s remains ambiguous after Neto item lookup — '
-                    'creating [NETO-UNSYNCED] placeholder to preserve the order line',
+                    'auto-creating a product to preserve the order line',
                     sku,
                 )
 
         conflict_on_default_code = False
-        products = Product.search([('default_code', '=', sku)])
+        company_domain = self._neto_company_domain(store) if hasattr(self, '_neto_company_domain') else []
+        products = Product.search([('default_code', '=', sku)] + company_domain)
         if hasattr(self, '_select_active_unique_match'):
             product, conflict_on_default_code = self._select_active_unique_match(products)
             if product:
@@ -572,27 +587,31 @@ class NetoConnector(models.AbstractModel):
         if conflict_on_default_code:
             _logger.warning(
                 'Neto sync: SKU=%s matches multiple Odoo products by default_code and '
-                'could not be resolved — creating [NETO-UNSYNCED] placeholder',
+                'could not be resolved — auto-creating a product for the order line',
                 sku,
             )
 
         if item and item.get('Name'):
-            base_name = item['Name'].strip()
+            product_name = item['Name'].strip()
         elif line_data.get('ProductName'):
-            base_name = line_data['ProductName'].strip()
+            product_name = line_data['ProductName'].strip()
         else:
-            base_name = sku
+            product_name = sku
 
-        product_name = f"{base_name} {_NETO_UNSYNCED_SUFFIX}"
-
+        # Reuse a previous auto-creation rather than minting a duplicate every time
+        # the order syncs. Matched on the provenance flag, not on the product name,
+        # so that renaming a product in Odoo cannot spawn a second placeholder.
+        # The name clause keeps pre-19.0.1.6.0 placeholders findable.
         existing_placeholder = Product.with_context(active_test=False).search([
             ('default_code', '=', sku),
+            '|',
+            ('neto_auto_created_from_order', '=', True),
             ('name', 'ilike', _NETO_UNSYNCED_SUFFIX),
         ], order='active desc, id', limit=1)
         if existing_placeholder:
             _logger.warning(
                 'Neto sync: SKU=%s could not be safely matched; reusing existing '
-                '[NETO-UNSYNCED] placeholder product %s instead of creating another one',
+                'auto-created product %s instead of creating another one',
                 sku,
                 existing_placeholder.id,
             )
@@ -638,6 +657,7 @@ class NetoConnector(models.AbstractModel):
             'standard_price': cost_price,
             'company_id':     False,
             'invoice_policy': 'order',   # always invoice on ordered qty
+            'neto_auto_created_from_order': True,
         }
         if barcode:
             vals['barcode'] = barcode
@@ -1511,7 +1531,8 @@ class NetoConnector(models.AbstractModel):
             )
             msg_parts.append(Markup(
                 '<p>&#9989; <strong>The following products were <u>auto-created</u> from Neto '
-                '(marked <em>[NETO-UNSYNCED]</em>) and added to this order. '
+                'and added to this order. They are flagged '
+                '<em>Auto-created from Neto Order</em> on the product form. '
                 'Please review and update them in the product catalog:</strong></p>'
                 '<table style="border-collapse:collapse;width:100%;font-size:13px;">'
                 '<thead><tr style="background:#f0fff4;font-weight:600;">'

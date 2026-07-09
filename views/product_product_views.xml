@@ -10,16 +10,24 @@
                 <field name="neto_store_id"/>
                 <field name="neto_parent_sku"/>
                 <field name="neto_available_sell_quantity"/>
+                <field name="neto_auto_created_from_order"/>
             </xpath>
             <xpath expr="//notebook" position="inside">
-                <page string="Neto Links">
-                    <field name="neto_product_link_ids" readonly="1">
+                <page string="Neto" name="neto_reference">
+                    <field name="neto_product_link_ids" readonly="1" nolabel="1">
                         <list>
                             <field name="store_id"/>
                             <field name="company_id"/>
-                            <field name="neto_sku"/>
                             <field name="neto_product_id"/>
+                            <field name="neto_sku"/>
                             <field name="neto_barcode"/>
+                            <field name="neto_brand" optional="show"/>
+                            <field name="neto_model" optional="hide"/>
+                            <field name="neto_parent_sku" optional="hide"/>
+                            <field name="neto_is_variant" optional="hide"/>
+                            <field name="neto_default_price" optional="hide"/>
+                            <field name="neto_rrp" optional="hide"/>
+                            <field name="neto_cost_price" optional="hide"/>
                             <field name="available_sell_quantity"/>
                             <field name="is_active"/>
                             <field name="last_sync_date"/>
