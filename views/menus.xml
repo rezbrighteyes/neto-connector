@@ -14,6 +14,7 @@
     <menuitem id="menu_neto_sync_root"
               name="Neto Sync"
               action="neto_sync_log_action"
+              web_icon="Reza_neto_connector,static/description/icon.png"
               sequence="100"/>
 
     <!-- Groups -->
