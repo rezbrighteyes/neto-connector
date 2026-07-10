@@ -1256,7 +1256,6 @@ class NetoConnector(models.AbstractModel):
     ):
         imported_price_map = self._get_imported_price_map(store, item)
         price_values = self._get_price_values(store, item, imported_price_map=imported_price_map)
-        is_variant = str(item.get('IsVariant') or '').strip().lower() == 'true'
         if price_values['cost_price'] > 0:
             template.sudo().with_company(store.company_id).write({
                 'standard_price': price_values['cost_price'],
@@ -1266,12 +1265,21 @@ class NetoConnector(models.AbstractModel):
         )
         template_values = {
             'categ_id': category.id,
+            # Mirror Neto's IsActive: an inactive Neto item becomes an archived Odoo
+            # template. Archiving a template archives its variants, and the mapping on
+            # neto.product.link survives, so order sync can still resolve a
+            # discontinued SKU instead of auto-creating a placeholder for it.
+            # Only an explicit 'False' archives. A missing or empty IsActive means
+            # active -- do NOT use _to_bool here, it would archive on an empty value.
             'active': str(item.get('IsActive') or '').strip().lower() != 'false',
+            # Always refresh the name. This used to be skipped when IsVariant was
+            # true, because a variant child would otherwise overwrite its parent
+            # template's name. The catalogue is flat now -- every item owns its own
+            # template -- so skipping it just froze ~600 product names forever.
+            'name': (item.get('Name') or item.get('SKU') or template.name).strip(),
         }
         if not pricelist:
             template_values['list_price'] = price_values['sale_price']
-        if not is_variant:
-            template_values['name'] = (item.get('Name') or item.get('SKU') or template.name).strip()
         template.sudo().write(template_values)
         self._ensure_company_on_template(template, store.company_id)
         product_values = self._prepare_product_write_values(
@@ -1425,6 +1433,31 @@ class NetoConnector(models.AbstractModel):
         items = self._fetch_all_products(
             store, include_active=include_active, include_inactive=include_inactive
         )
+
+        # Drop Neto's parent grouping items. A parent is an item whose own SKU is
+        # named as another item's ParentSKU: it is a shell that groups children, not
+        # something anyone can buy. The stock path already skipped these
+        # (_is_parent_stock_item) but the create path did not, so any parent Neto
+        # returned would be imported as a sellable product -- p_rockosnobby,
+        # p_header, p_ladiesweaves. Detection is only complete when both active and
+        # inactive items are fetched, since a parent and its children can differ in
+        # IsActive; with include_inactive=False a parent whose children are all
+        # inactive is invisible here and would slip through.
+        variant_parent_skus = self._collect_variant_parent_skus(items)
+        sellable_items, parent_items = [], []
+        for item in items:
+            if self._is_parent_stock_item(item, variant_parent_skus=variant_parent_skus):
+                parent_items.append(item)
+            else:
+                sellable_items.append(item)
+        if parent_items:
+            _logger.info(
+                'Neto product sync [%s]: skipping %d parent grouping item(s), e.g. %s',
+                store.name, len(parent_items),
+                ', '.join((i.get('SKU') or '?') for i in parent_items[:5]),
+            )
+        items = sellable_items
+
         standalones, variants = self._split_products(items)
         matched_ids = set()
         write_counter = 0
