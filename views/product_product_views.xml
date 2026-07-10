@@ -25,6 +25,7 @@
                             <field name="neto_model" optional="hide"/>
                             <field name="neto_parent_sku" optional="hide"/>
                             <field name="neto_is_variant" optional="hide"/>
+                            <field name="neto_categories" optional="hide" string="Neto Categories"/>
                             <field name="neto_default_price" optional="hide"/>
                             <field name="neto_rrp" optional="hide"/>
                             <field name="neto_cost_price" optional="hide"/>

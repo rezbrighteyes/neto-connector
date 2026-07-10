@@ -20,6 +20,9 @@ class NetoApiError(Exception):
 
 _GST_DIVISOR = 1.1
 _PRODUCT_PAGE_SIZE = 100
+# Backstop for the paging loop, which now runs until Neto returns an empty page.
+# 500 pages x 100 = 50k items per IsActive filter, far above either store.
+_PRODUCT_MAX_PAGES = 500
 _PRODUCT_WRITE_BATCH_SIZE = 50
 _SALEABLE_CATEGORY_ROOT = ('All', 'Saleable')
 _CATCHALL_CATEGORY_NAME = 'Neto'
@@ -466,6 +469,32 @@ class NetoConnector(models.AbstractModel):
         self._check_neto_ack(body)
         return self._extract_items_from_getitem_response(body)
 
+    def _fetch_products_page_with_retry(self, store, page, limit, active_filter,
+                                        output_selector, attempts=3):
+        """Fetch one page, retrying an EMPTY response before believing it.
+
+        Neto has been observed returning an empty page in the middle of a result
+        set: a Liaise sync stopped at page 21 with 2000 active items, while an
+        identical fetch minutes later returned 65 more on that very page. An empty
+        page is therefore not proof of end-of-data, and treating it as such silently
+        truncated the catalogue. Retry before concluding the sequence has ended.
+        """
+        for attempt in range(attempts):
+            chunk = self._fetch_products_page(
+                store, page=page, limit=limit, active_filter=active_filter,
+                output_selector=output_selector,
+            )
+            if chunk:
+                return chunk
+            if attempt + 1 < attempts:
+                _logger.warning(
+                    'Neto product sync [%s]: empty page %d on IsActive=%s '
+                    '(attempt %d/%d) — retrying before treating it as the end',
+                    store.name, page, active_filter, attempt + 1, attempts,
+                )
+                time.sleep(2 * (attempt + 1))
+        return []
+
     def _fetch_all_products(self, store, include_active=True, include_inactive=False):
         items = []
         active_filters = []
@@ -486,19 +515,51 @@ class NetoConnector(models.AbstractModel):
                 store.name, exc, ', '.join(_PRODUCT_OUTPUT_SELECTOR_EXTRA),
             )
             selector = _PRODUCT_OUTPUT_SELECTOR_CORE
+        # Neto returns short pages that are NOT the last page. Stopping on
+        # len(chunk) < Limit silently truncated the catalogue: one run took 2050 of
+        # 3853 inactive Liaise products because page 21 happened to come back with
+        # 50 items. Only an empty page ends the sequence. Page contents also shift
+        # between calls (no stable sort), so dedupe on the Neto id and stop when two
+        # consecutive pages add nothing new.
+        seen = set()
         for active_filter in active_filters:
             page = 1
-            while True:
-                chunk = self._fetch_products_page(
+            barren_pages = 0
+            while page <= _PRODUCT_MAX_PAGES:
+                chunk = self._fetch_products_page_with_retry(
                     store, page=page, limit=_PRODUCT_PAGE_SIZE, active_filter=active_filter,
                     output_selector=selector,
                 )
                 if not chunk:
                     break
-                items.extend(chunk)
-                if len(chunk) < _PRODUCT_PAGE_SIZE:
-                    break
+                fresh = 0
+                for item in chunk:
+                    key = (
+                        item.get('ID') or item.get('InventoryID') or item.get('SKU') or ''
+                    ).strip()
+                    if key:
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                    items.append(item)
+                    fresh += 1
+                if fresh:
+                    barren_pages = 0
+                else:
+                    barren_pages += 1
+                    if barren_pages >= 2:
+                        break
                 page += 1
+            else:
+                _logger.error(
+                    'Neto product sync [%s]: hit the %d page cap on IsActive=%s. '
+                    'The catalogue may be truncated.',
+                    store.name, _PRODUCT_MAX_PAGES, active_filter,
+                )
+            _logger.info(
+                'Neto product sync [%s]: IsActive=%s fetched through page %d, %d unique items so far',
+                store.name, active_filter, page, len(items),
+            )
         return items
 
     def _get_neto_categories(self, item):

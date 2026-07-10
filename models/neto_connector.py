@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
+import time
 import requests
 from datetime import datetime, timedelta, timezone
 
@@ -55,6 +56,9 @@ _INVOICE_CUTOFF_DAYS = 730
 
 # GetOrder page size — keep pages small so history jobs checkpoint often.
 _GET_ORDER_PAGE_SIZE = 25
+# Backstop for the paging loop, which now runs until Neto stops returning new
+# orders rather than until a short page. 4000 x 25 = 100k orders per run.
+_GET_ORDER_MAX_PAGES = 4000
 
 _GET_PAYMENT_PAGE_SIZE = 100
 
@@ -777,6 +781,23 @@ class NetoConnector(models.AbstractModel):
         )
         return orders
 
+    def _fetch_orders_page_with_retry(self, store, since_dt, page, until_dt=None, attempts=3):
+        """Fetch one page of orders, retrying an EMPTY response before believing it.
+        Neto returns empty pages mid-sequence -- proven on GetItem, where trusting
+        one cost 1868 products. Same API, same treatment."""
+        for attempt in range(attempts):
+            orders = self._fetch_orders_page(store, since_dt, page=page, until_dt=until_dt)
+            if orders:
+                return orders
+            if attempt + 1 < attempts:
+                _logger.warning(
+                    'Neto sync [%s]: empty order page %d (attempt %d/%d) — retrying '
+                    'before treating it as the end of the range',
+                    store.name, page, attempt + 1, attempts,
+                )
+                time.sleep(2 * (attempt + 1))
+        return []
+
     def _raise_on_neto_order_error(self, store, body, page):
         """Raise when Neto reports Ack='Error' inside an HTTP 200 body.
 
@@ -821,10 +842,19 @@ class NetoConnector(models.AbstractModel):
                     store.name, page, exc,
                 )
                 break
-            all_orders.extend(orders)
-            if len(orders) < _GET_ORDER_PAGE_SIZE:
+            if not orders:
                 break
+            all_orders.extend(orders)
+            # No short-page break: Neto returns short pages mid-sequence. Only an
+            # empty page ends the run. Unused by the live sync today, but the bug is
+            # the same one that truncated the product fetch.
             page += 1
+            if page > _GET_ORDER_MAX_PAGES:
+                _logger.error(
+                    'Neto sync [%s]: hit the %d page cap in _fetch_orders',
+                    store.name, _GET_ORDER_MAX_PAGES,
+                )
+                break
         _logger.info(
             'Neto sync [%s]: %d total order(s) across %d page(s)',
             store.name, len(all_orders), page,
@@ -1929,6 +1959,8 @@ class NetoConnector(models.AbstractModel):
         cursor_candidate = fields.Datetime.now()
         fetch_failed = False
         cancelled = False
+        seen_order_ids = set()
+        barren_pages = 0
 
         while True:
             if should_stop and should_stop():
@@ -1939,7 +1971,9 @@ class NetoConnector(models.AbstractModel):
                 cancelled = True
                 break
             try:
-                orders = self._fetch_orders_page(store, since_dt, page=page, until_dt=until_dt)
+                orders = self._fetch_orders_page_with_retry(
+                    store, since_dt, page=page, until_dt=until_dt
+                )
             except requests.exceptions.RequestException as exc:
                 _logger.error(
                     'Neto sync [%s]: API request failed on page %d — %s',
@@ -1958,9 +1992,17 @@ class NetoConnector(models.AbstractModel):
             if not orders:
                 break
 
+            # Track page membership ourselves. synced_ids only collects orders that
+            # pass the business filters, so a page made entirely of internal $0
+            # transfers would look barren and end the run early.
+            page_order_ids = {str(o.get('OrderID') or '').strip() for o in orders}
+            page_order_ids.discard('')
+            new_order_ids = page_order_ids - seen_order_ids
+            seen_order_ids |= page_order_ids
+
             _logger.info(
-                'Neto sync [%s]: processing %d order(s) from page %d',
-                store.name, len(orders), page,
+                'Neto sync [%s]: processing %d order(s) from page %d (%d new)',
+                store.name, len(orders), page, len(new_order_ids),
             )
             page_cancelled = False
             for order_data in orders:
@@ -1996,9 +2038,31 @@ class NetoConnector(models.AbstractModel):
                 cancelled = True
                 break
 
-            if len(orders) < _GET_ORDER_PAGE_SIZE:
-                break
+            # Neto returns short pages that are NOT the last page -- confirmed on
+            # GetItem, where stopping at len(chunk) < Limit silently dropped 1803 of
+            # 3853 products. Only an empty page ends the sequence. Page contents also
+            # shift between calls, so stop when two consecutive pages carry no order
+            # we have not already processed this run.
+            if not new_order_ids:
+                barren_pages += 1
+                if barren_pages >= 2:
+                    _logger.info(
+                        'Neto sync [%s]: two consecutive pages with no new orders — '
+                        'end of range at page %d',
+                        store.name, page,
+                    )
+                    break
+            else:
+                barren_pages = 0
+
             page += 1
+            if page > _GET_ORDER_MAX_PAGES:
+                _logger.error(
+                    'Neto sync [%s]: hit the %d page cap; range may be truncated',
+                    store.name, _GET_ORDER_MAX_PAGES,
+                )
+                fetch_failed = True
+                break
 
         # Advance the cursor exactly once, and only when every page was fetched and
         # processed. A partial run leaves last_sync_date untouched so the next run
