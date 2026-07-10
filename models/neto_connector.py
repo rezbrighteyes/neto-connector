@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import logging
 import requests
 from datetime import datetime, timedelta, timezone
@@ -6,6 +7,12 @@ from datetime import datetime, timedelta, timezone
 from markupsafe import Markup
 from odoo import models, fields
 from odoo.exceptions import ValidationError
+
+
+class NetoOrderApiError(Exception):
+    """Neto answered HTTP 200 with Ack='Error'. Raised so a soft API failure is
+    never mistaken for 'no more orders' -- which would advance the sync cursor
+    past orders that were never fetched."""
 
 _logger = logging.getLogger(__name__)
 
@@ -749,6 +756,12 @@ class NetoConnector(models.AbstractModel):
             body.get('Ack') or body.get('GetOrderResponse', {}).get('Ack', 'n/a'),
         )
 
+        # Neto answers HTTP 200 with Ack='Error' on a soft failure (bad filter,
+        # throttling, expired key). The Ack was logged and then ignored, so the
+        # empty Order list read as "no more orders" and the sync ended clean --
+        # having silently skipped everything from this page onward.
+        self._raise_on_neto_order_error(store, body, page)
+
         if 'GetOrderResponse' in body:
             orders = body['GetOrderResponse'].get('Order', [])
         else:
@@ -763,6 +776,26 @@ class NetoConnector(models.AbstractModel):
             store.name, page, len(orders),
         )
         return orders
+
+    def _raise_on_neto_order_error(self, store, body, page):
+        """Raise when Neto reports Ack='Error' inside an HTTP 200 body.
+
+        _sync_store treats any exception from a page fetch as fetch_failed, which
+        leaves last_sync_date untouched -- so the window is retried next run rather
+        than silently skipped. Never downgrade this to a warning."""
+        if not isinstance(body, dict):
+            raise NetoOrderApiError(
+                'Neto returned a non-object response on page %d for store %s'
+                % (page, store.name)
+            )
+        payload = body.get('GetOrderResponse', body)
+        ack = str(payload.get('Ack') or body.get('Ack') or '').strip().lower()
+        if ack == 'error':
+            messages = payload.get('Messages') or body.get('Messages') or {}
+            raise NetoOrderApiError(
+                'Neto GetOrder returned Ack=Error on page %d for store %s: %s'
+                % (page, store.name, json.dumps(messages, default=str))
+            )
 
     def _fetch_orders(self, store, since_dt, until_dt=None):
         _logger.info(
@@ -1862,13 +1895,13 @@ class NetoConnector(models.AbstractModel):
         # Suppress all email notifications during sync
         self = self.with_context(**self._neto_silent_context())
         if self._disable_unsafe_temp_history_cron():
-            return
+            return {'processed': 0, 'pages': 0, 'fetch_failed': False, 'cancelled': True}
         if not store.api_key or not store.store_url:
             _logger.warning(
                 'Neto connector: store "%s" missing api_key or store_url — skipping.',
                 store.name,
             )
-            return
+            return {'processed': 0, 'pages': 0, 'fetch_failed': False, 'cancelled': True}
 
         if since_dt:
             pass
@@ -1890,6 +1923,12 @@ class NetoConnector(models.AbstractModel):
         synced_customers = set()
         processed_orders = 0
         page = 1
+        # Stamp the cursor from BEFORE the first fetch, never from the end of the
+        # run: an order created while we were paging would otherwise fall in the
+        # gap between its Neto timestamp and now(), and never be seen again.
+        cursor_candidate = fields.Datetime.now()
+        fetch_failed = False
+        cancelled = False
 
         while True:
             if should_stop and should_stop():
@@ -1897,6 +1936,7 @@ class NetoConnector(models.AbstractModel):
                     'Neto sync [%s]: stopped before page %d by cancel request',
                     store.name, page,
                 )
+                cancelled = True
                 break
             try:
                 orders = self._fetch_orders_page(store, since_dt, page=page, until_dt=until_dt)
@@ -1905,12 +1945,14 @@ class NetoConnector(models.AbstractModel):
                     'Neto sync [%s]: API request failed on page %d — %s',
                     store.name, page, exc,
                 )
+                fetch_failed = True
                 break
             except Exception as exc:
                 _logger.error(
                     'Neto sync [%s]: _fetch_orders_page failed on page %d — %s',
                     store.name, page, exc,
                 )
+                fetch_failed = True
                 break
 
             if not orders:
@@ -1920,12 +1962,14 @@ class NetoConnector(models.AbstractModel):
                 'Neto sync [%s]: processing %d order(s) from page %d',
                 store.name, len(orders), page,
             )
+            page_cancelled = False
             for order_data in orders:
                 if should_stop and should_stop():
                     _logger.info(
                         'Neto sync [%s]: stopped during page %d by cancel request',
                         store.name, page,
                     )
+                    page_cancelled = True
                     break
                 self._process_order(
                     order_data, store, synced_ids, synced_customers,
@@ -1933,25 +1977,54 @@ class NetoConnector(models.AbstractModel):
                 )
                 processed_orders += 1
 
-            if update_cursor:
-                store.sudo().write({'last_sync_date': fields.Datetime.now()})
+            # Commit the page's orders so a later failure does not throw away work.
+            # The cursor is NOT advanced here: doing so meant a fetch error on page
+            # N left last_sync_date at now(), and every order on pages N..end was
+            # skipped forever. _process_order matches on neto_order_id, so replaying
+            # a committed page on the next run is a no-op.
             self.env.cr.commit()
+
+            if page_cancelled:
+                cancelled = True
+                break
 
             if should_stop and should_stop():
                 _logger.info(
                     'Neto sync [%s]: stopped after page %d by cancel request',
                     store.name, page,
                 )
+                cancelled = True
                 break
 
             if len(orders) < _GET_ORDER_PAGE_SIZE:
                 break
             page += 1
 
+        # Advance the cursor exactly once, and only when every page was fetched and
+        # processed. A partial run leaves last_sync_date untouched so the next run
+        # re-reads the same window rather than silently losing the remainder.
+        cursor_advanced = False
+        if update_cursor and not fetch_failed and not cancelled:
+            store.sudo().write({'last_sync_date': cursor_candidate})
+            self.env.cr.commit()
+            cursor_advanced = True
+
         _logger.info(
-            'Neto sync [%s]: completed — %d order(s) processed across %d page(s).',
-            store.name, processed_orders, page,
+            'Neto sync [%s]: %s — %d order(s) processed across %d page(s); '
+            'cursor %s',
+            store.name,
+            'completed' if not (fetch_failed or cancelled) else (
+                'ABORTED on fetch error' if fetch_failed else 'cancelled'),
+            processed_orders, page,
+            'advanced to %s' % cursor_candidate if cursor_advanced else 'left at %s' % store.last_sync_date,
         )
+        return {
+            'processed': processed_orders,
+            'pages': page,
+            'fetch_failed': fetch_failed,
+            'cancelled': cancelled,
+            'cursor_advanced': cursor_advanced,
+        }
 
     # -------------------------------------------------------------------------
     # Public entry point (cron)

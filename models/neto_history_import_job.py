@@ -186,7 +186,7 @@ class NetoHistoryImportJob(models.Model):
             }
 
             if self.import_orders:
-                connector._sync_store(
+                result = connector._sync_store(
                     self.store_id,
                     since_dt=date_from,
                     until_dt=date_to,
@@ -194,6 +194,16 @@ class NetoHistoryImportJob(models.Model):
                     should_stop=self._cancel_requested,
                     update_cursor=False,
                 )
+                # A page fetch that died mid-range used to be logged and swallowed,
+                # and the job still finished as 'done' -- so a partial import looked
+                # like a complete one. Surface it: the caller marks the job 'error'.
+                if isinstance(result, dict) and result.get('fetch_failed'):
+                    raise RuntimeError(
+                        'Neto order fetch failed part-way through %s..%s for store %s. '
+                        'Orders already imported were committed; the range is INCOMPLETE. '
+                        'Re-queue this job to fetch the remainder.'
+                        % (date_from, date_to, self.store_id.display_name)
+                    )
 
             if self._cancel_requested():
                 self._finish_cancelled()

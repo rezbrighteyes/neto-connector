@@ -245,9 +245,14 @@ class NetoSyncWizard(models.TransientModel):
         until_dt = date_to.replace(tzinfo=timezone.utc) if date_to else None
 
         connector = self.env['neto.connector']
+        # update_cursor=False: this is a manual backfill of an explicit window. Left
+        # to default True, syncing an old date range would drag the live cron's
+        # last_sync_date forward to now(), so every order between the end of that
+        # range and now would never be fetched again.
         connector._sync_store(
             store, since_dt=since_dt, until_dt=until_dt,
             import_as_history=self.import_as_history,
+            update_cursor=False,
         )
 
         label = f"{date_from.strftime('%d/%m/%Y %H:%M')}"
