@@ -546,8 +546,8 @@ class NetoConnector(models.AbstractModel):
                 )
 
         conflict_on_default_code = False
-        company_domain = self._neto_company_domain(store) if hasattr(self, '_neto_company_domain') else []
-        products = Product.search([('default_code', '=', sku)] + company_domain)
+        fallback_domain = self._neto_sku_fallback_domain(store) if hasattr(self, '_neto_sku_fallback_domain') else []
+        products = Product.search([('default_code', '=', sku)] + fallback_domain)
         if hasattr(self, '_select_active_unique_match'):
             product, conflict_on_default_code = self._select_active_unique_match(products)
             if product:

@@ -836,20 +836,34 @@ class NetoConnector(models.AbstractModel):
             return False
         return True
 
-    def _neto_company_domain(self, store):
-        """Domain restricting product matches to shared products or the store's
-        own company. Neto product IDs / SKUs are per-store, and Edbert / Liaise /
-        Global share one database, so a SKU-only fallback must never bind to
-        another company's product."""
-        company = store.company_id
-        if not company:
-            return []
-        return ['|', ('company_id', '=', False), ('company_id', '=', company.id)]
+    def _neto_sku_fallback_domain(self, store):
+        """Extra domain for the SKU / reference fallbacks in the product matchers.
+
+        NOT company-scoped, deliberately. The same SKU in Liaise and Global is the
+        same physical product with two Neto product IDs, and must resolve to ONE Odoo
+        product carrying one neto.product.link per store. Identity stays
+        company-correct because the link table is keyed on (store_id,
+        neto_product_id); only the Odoo product itself is shared. (A company_ids
+        domain could not express the old intent anyway: base_multi_company makes
+        product.company_id a non-stored compute whose search() rewrites onto
+        company_ids, and every Neto product is shared into Edbert plus its store.)
+
+        Restricted to goods. Dropping the company filter removed the only guard
+        stopping a Neto SKU from binding to an unrelated product, and every caller
+        runs sudo() so record rules do not help. Neto's catalogue contains goods, so
+        a fallback must never reach a service product: Delivery, Delivery_007,
+        FUEL-SURCHARGE, NETO_SHIPPING and NETO-SURCHARGE are all service default_codes
+        that collide with real Neto SKUs. Binding one would rename it, recategorise
+        it, and archive it when Neto marks the item inactive -- silently breaking
+        Starshipit or the connector's own shipping lines.
+        """
+        return [('type', '=', 'consu')]
 
     def _match_stored_product_by_sku(self, store, sku):
         """Match an already-mapped Odoo product for a Neto SKU using ONLY data
-        stored in Odoo (no live Neto API call). Store/company scoped. Returns an
-        empty recordset when there is no unambiguous stored match."""
+        stored in Odoo (no live Neto API call). The link lookup is store-scoped; the
+        SKU fallbacks are not, because one product is shared across stores. Returns
+        an empty recordset when there is no unambiguous stored match."""
         Product = self.env['product.product'].sudo().with_context(active_test=False)
         sku = (sku or '').strip()
         if not sku:
@@ -865,16 +879,16 @@ class NetoConnector(models.AbstractModel):
             if link and link.product_id:
                 return link.product_id
         # 2. Company-scoped reference fallback (never cross-company).
-        company_domain = self._neto_company_domain(store)
+        fallback_domain = self._neto_sku_fallback_domain(store)
         for sku_variant in sku_variants:
-            products = Product.search([('default_code', '=', sku_variant)] + company_domain)
+            products = Product.search([('default_code', '=', sku_variant)] + fallback_domain)
             matched, _conflict = self._select_active_unique_match(products)
             if matched:
                 return matched
         if 'x_studio_neto_reference' in Product._fields:
             for sku_variant in sku_variants:
                 products = Product.search(
-                    [('x_studio_neto_reference', '=', sku_variant)] + company_domain
+                    [('x_studio_neto_reference', '=', sku_variant)] + fallback_domain
                 )
                 matched, _conflict = self._select_active_unique_match(products)
                 if matched:
@@ -933,9 +947,9 @@ class NetoConnector(models.AbstractModel):
         for sku_variant in sku_variants:
             if sku_variant not in reference_candidates:
                 reference_candidates.append(sku_variant)
-        company_domain = self._neto_company_domain(store)
+        fallback_domain = self._neto_sku_fallback_domain(store)
         for reference in reference_candidates:
-            products = Product.search([('default_code', '=', reference)] + company_domain)
+            products = Product.search([('default_code', '=', reference)] + fallback_domain)
             matched, conflict = self._select_active_unique_match(products)
             if matched:
                 return matched, False
@@ -944,7 +958,7 @@ class NetoConnector(models.AbstractModel):
         if 'x_studio_neto_reference' in Product._fields:
             for sku_variant in sku_variants:
                 products = Product.search(
-                    [('x_studio_neto_reference', '=', sku_variant)] + company_domain
+                    [('x_studio_neto_reference', '=', sku_variant)] + fallback_domain
                 )
                 matched, conflict = self._select_active_unique_match(products)
                 if matched:
@@ -1306,11 +1320,39 @@ class NetoConnector(models.AbstractModel):
         if update_neto_quantity and (not product.neto_store_id or product.neto_store_id == store):
             product.sudo().write({'neto_available_sell_quantity': qty})
         link = self._upsert_product_link(store, product, item)
+        # The upsert refreshes this store's is_active. Re-derive the template's active
+        # flag from all links so a stock-only sync cannot leave it stale.
+        self._sync_template_active_from_links(product.product_tmpl_id, item)
         link.sudo().write({
             'available_sell_quantity': qty,
             'last_sync_date': fields.Datetime.now(),
         })
         return True
+
+    def _sync_template_active_from_links(self, template, item):
+        """Archive a product only when EVERY Neto store that lists it says inactive.
+
+        One Odoo product can carry a link per store. A SKU that is active in Liaise
+        and inactive in Global must stay active: deriving `active` from the item
+        currently being processed would archive it whenever Global happened to sync
+        last, and unarchive it on the next Liaise run.
+        """
+        template = template.sudo().with_context(active_test=False)
+        variant_ids = template.product_variant_ids.ids
+        links = self.env['neto.product.link'].sudo().search([
+            ('product_id', 'in', variant_ids),
+        ]) if variant_ids else self.env['neto.product.link'].sudo().browse()
+
+        if links:
+            should_be_active = any(links.mapped('is_active'))
+        else:
+            # No link yet (first write of a brand-new product). Only an explicit
+            # 'False' archives -- a missing or empty IsActive means active, so do NOT
+            # use _to_bool here.
+            should_be_active = str(item.get('IsActive') or '').strip().lower() != 'false'
+
+        if template.active != should_be_active:
+            template.write({'active': should_be_active})
 
     def _write_product_record(
         self, product, template, store, item, category, action, reason=False, sync_stock=True
@@ -1324,29 +1366,36 @@ class NetoConnector(models.AbstractModel):
         pricelist = (
             imported_price_map.pricelist_id if imported_price_map else store.pricelist_id
         )
-        template_values = {
-            'categ_id': category.id,
-            # Mirror Neto's IsActive: an inactive Neto item becomes an archived Odoo
-            # template. Archiving a template archives its variants, and the mapping on
-            # neto.product.link survives, so order sync can still resolve a
-            # discontinued SKU instead of auto-creating a placeholder for it.
-            # Only an explicit 'False' archives. A missing or empty IsActive means
-            # active -- do NOT use _to_bool here, it would archive on an empty value.
-            'active': str(item.get('IsActive') or '').strip().lower() != 'false',
+        # A product shared by Liaise and Global is written by two syncs. Only the
+        # owning store -- the one recorded on product.neto_store_id, or the first to
+        # claim an unowned product -- controls the shared descriptive fields.
+        # Otherwise the two stores overwrite each other's name, category and price on
+        # every run, and the values flip depending on which synced last.
+        legacy_store = product.neto_store_id
+        owns_product = not legacy_store or legacy_store == store
+
+        template_values = {}
+        if owns_product:
+            template_values['categ_id'] = category.id
             # Always refresh the name. This used to be skipped when IsVariant was
             # true, because a variant child would otherwise overwrite its parent
             # template's name. The catalogue is flat now -- every item owns its own
             # template -- so skipping it just froze ~600 product names forever.
-            'name': (item.get('Name') or item.get('SKU') or template.name).strip(),
-        }
-        if not pricelist:
-            template_values['list_price'] = price_values['sale_price']
-        template.sudo().write(template_values)
+            template_values['name'] = (
+                item.get('Name') or item.get('SKU') or template.name
+            ).strip()
+            if not pricelist:
+                template_values['list_price'] = price_values['sale_price']
+        if template_values:
+            template.sudo().write(template_values)
         self._ensure_company_on_template(template, store.company_id)
         product_values = self._prepare_product_write_values(
             store, item, price_values, action, reason=reason, product=product,
         )
         link = self._upsert_product_link(store, product, item, reason=reason)
+        # active is derived from ALL of the product's links, not from this item alone.
+        # Must run after the upsert so this store's is_active is already recorded.
+        self._sync_template_active_from_links(template, item)
         try:
             product.sudo().write(product_values)
         except ValidationError as exc:
