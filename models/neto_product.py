@@ -852,16 +852,9 @@ class NetoConnector(models.AbstractModel):
                     'not using it as a cross-store product match',
                     neto_product_id, store.display_name,
                 )
-            if (
-                'external_api_id' in Product._fields
-                and neto_product_id.isdigit()
-                and Product.search([('external_api_id', '=', int(neto_product_id))], limit=1)
-            ):
-                _logger.info(
-                    'Neto product sync: external API ID %s exists outside store %s; '
-                    'not using it as a cross-store product match',
-                    neto_product_id, store.display_name,
-                )
+            # No external_api_id check here: that field holds a REMOTE Odoo product
+            # id, not a Neto one. Comparing a Neto ID against it matches different
+            # id spaces and only ever produced a misleading log line.
         for sku_variant in sku_variants:
             link = ProductLink.search([
                 ('store_id', '=', store.id),
@@ -1102,8 +1095,12 @@ class NetoConnector(models.AbstractModel):
             )
         ):
             values['reza_generic_barcode'] = generic_barcode or False
-        if can_write_legacy_store_fields and 'external_api_id' in self.env['product.product']._fields:
-            values['external_api_id'] = int(neto_product_id) if neto_product_id.isdigit() else False
+        # external_api_id is NOT ours. It belongs to d3_external_api and holds the
+        # REMOTE Odoo product id (d3_external_api/wizard/external_api.py:207), which
+        # d3_external_api/models/purchase_order.py:107 sends back as "product_id" on
+        # intercompany POs. Writing a Neto product id there makes the remote order a
+        # different product entirely, silently. Populate it with cron 78,
+        # "External API: Import Products", after a Neto sync -- never from here.
         # Preserve an existing Odoo internal reference on matched products.
         if not product or not product.default_code:
             values['default_code'] = sku or False
