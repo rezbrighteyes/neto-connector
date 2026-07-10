@@ -53,6 +53,8 @@
                                     <field name="neto_subtitle"/>
                                     <field name="neto_brand"/>
                                     <field name="neto_model"/>
+                                    <field name="neto_categories"/>
+                                    <field name="neto_specifications"/>
                                 </group>
                                 <group string="Barcodes">
                                     <field name="neto_barcode"/>
@@ -98,12 +100,9 @@
                             <field name="neto_short_description"/>
                             <separator string="Description"/>
                             <field name="neto_description"/>
-                            <separator string="Item Specifics"/>
-                            <field name="neto_specifications" widget="text" nolabel="1"/>
                         </page>
                         <page string="Raw Data" name="neto_raw">
                             <group>
-                                <field name="neto_categories" widget="text"/>
                                 <field name="neto_price_groups_json" widget="text"/>
                                 <field name="warehouse_quantity_json" widget="text"/>
                                 <field name="last_sync_note" widget="text"/>

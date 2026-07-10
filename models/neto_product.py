@@ -317,7 +317,7 @@ class NetoProductLink(models.Model):
     neto_subtitle = fields.Char(string='Neto Subtitle')
     neto_model = fields.Char(string='Neto Model')
     neto_brand = fields.Char(string='Neto Brand')
-    neto_categories = fields.Text(string='Neto Categories')
+    neto_categories = fields.Char(string='Neto Categories')
 
     # --- pricing (reference only; Odoo pricing is set elsewhere) ------------
     neto_default_price = fields.Float(string='Neto Default Price')
@@ -342,8 +342,9 @@ class NetoProductLink(models.Model):
     # --- content ------------------------------------------------------------
     neto_description = fields.Html(string='Neto Description', sanitize=False)
     neto_short_description = fields.Html(string='Neto Short Description', sanitize=False)
-    # ItemSpecifics comes back as name/value pairs, not HTML. Stored as JSON.
-    neto_specifications = fields.Text(string='Neto Item Specifics (JSON)')
+    # ItemSpecifics is Neto's per-item option axis: "Colour: Light Pink | size: 26".
+    # Rendered readable; the verbatim structure lives in neto_raw_json.
+    neto_specifications = fields.Char(string='Neto Item Specifics')
     neto_search_keywords = fields.Text(string='Neto Search Keywords')
     neto_seo_page_title = fields.Char(string='Neto SEO Page Title')
     neto_seo_meta_description = fields.Text(string='Neto SEO Meta Description')
@@ -566,6 +567,10 @@ class NetoConnector(models.AbstractModel):
         raw = item.get('Categories') or []
         if not raw or raw == ['']:
             return []
+        # Neto returns a bare object when there is one block and a list when there
+        # are several. Iterating a dict would walk its keys as strings.
+        if isinstance(raw, dict):
+            raw = [raw]
         names = []
         for entry in raw:
             if not isinstance(entry, dict):
@@ -580,6 +585,34 @@ class NetoConnector(models.AbstractModel):
                 if name and name not in names:
                     names.append(name)
         return names
+
+    def _get_neto_item_specifics(self, item):
+        """Return Neto's ItemSpecifics as [(name, value), ...].
+
+        Shape mirrors Categories: [{'ItemSpecific': [{'Name': ..., 'Value': ...}]}],
+        with the inner value a bare dict when there is only one, and the outer block
+        a bare dict when there is only one block.
+        """
+        raw = item.get('ItemSpecifics') or []
+        if not raw or raw == ['']:
+            return []
+        if isinstance(raw, dict):
+            raw = [raw]
+        pairs = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            specifics = entry.get('ItemSpecific') or {}
+            if isinstance(specifics, dict):
+                specifics = [specifics]
+            for specific in specifics:
+                if not isinstance(specific, dict):
+                    continue
+                name = (specific.get('Name') or '').strip()
+                value = (specific.get('Value') or '').strip()
+                if name and value:
+                    pairs.append((name, value))
+        return pairs
 
     def _get_brighteyes_price(self, item):
         groups = item.get('PriceGroups') or []
@@ -1087,7 +1120,9 @@ class NetoConnector(models.AbstractModel):
             'neto_is_variant': _to_bool(item.get('IsVariant')),
             'neto_reference_number': _clean_str(item.get('ReferenceNumber')),
             'neto_subtitle': _clean_str(item.get('Subtitle')),
-            'neto_categories': _dump_json(item.get('Categories')),
+            # Human-readable, not a JSON dump. The verbatim structure -- CategoryID,
+            # Priority and all -- is still in neto_raw_json if anyone needs it.
+            'neto_categories': ', '.join(self._get_neto_categories(item)) or False,
             'neto_default_price': _to_float(item.get('DefaultPrice')),
             'neto_rrp': _to_float(item.get('RRP')),
             'neto_cost_price': _to_float(item.get('CostPrice')),
@@ -1104,7 +1139,9 @@ class NetoConnector(models.AbstractModel):
             'neto_supplier_item_code': _clean_str(item.get('SupplierItemCode')),
             'neto_description': _clean_str(item.get('Description')),
             'neto_short_description': _clean_str(item.get('ShortDescription')),
-            'neto_specifications': _dump_json(item.get('ItemSpecifics')),
+            'neto_specifications': ' | '.join(
+                '%s: %s' % (name, value) for name, value in self._get_neto_item_specifics(item)
+            ) or False,
             'neto_search_keywords': _clean_str(item.get('SearchKeywords')),
             'neto_seo_page_title': _clean_str(item.get('SEOPageTitle')),
             'neto_seo_meta_description': _clean_str(item.get('SEOMetaDescription')),
