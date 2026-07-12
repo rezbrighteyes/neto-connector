@@ -1413,7 +1413,13 @@ class NetoConnector(models.AbstractModel):
 
         template_values = {}
         if owns_product:
-            template_values['categ_id'] = category.id
+            # Set the category ONLY when the product is first created. Neto's
+            # category is a coarse auto-guess; curated categories (from the master
+            # spreadsheet via apply_set_product_categories, or set by hand) must
+            # survive every re-sync. Writing categ_id on update silently reverted
+            # them -- a Liaise re-sync wiped 1,327 curated categories this way.
+            if action == 'created':
+                template_values['categ_id'] = category.id
             # Always refresh the name. This used to be skipped when IsVariant was
             # true, because a variant child would otherwise overwrite its parent
             # template's name. The catalogue is flat now -- every item owns its own
