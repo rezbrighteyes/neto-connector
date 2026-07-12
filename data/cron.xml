@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <data noupdate="1">
 
     <record id="ir_cron_neto_sync" model="ir.cron">
         <field name="name">Neto: Sync Wholesale Orders</field>
@@ -8,7 +9,7 @@
         <field name="code">env['neto.connector'].run_sync(import_as_history=True)</field>
         <field name="interval_number">15</field>
         <field name="interval_type">minutes</field>
-        <field name="active" eval="True"/>
+        <field name="active" eval="False"/>
     </record>
 
     <record id="ir_cron_neto_product_sync" model="ir.cron">
@@ -41,4 +42,5 @@
         <field name="active" eval="True"/>
     </record>
 
+    </data>
 </odoo>
