@@ -1071,8 +1071,17 @@ class NetoConnector(models.AbstractModel):
         reference data on neto.product.link instead, and never as structure.
         """
         ProductTemplate = self.env['product.template'].sudo()
+        # Stamp default_code and barcode AT creation, not only later in
+        # _write_product_record. Neto's paged feed repeats the same item within a
+        # single run (no stable page order); if the freshly created row has no SKU
+        # yet, _match_existing_product cannot recognise it on the repeat and a
+        # duplicate template is born. One run on 12 Jul 2026 made up to 23 copies
+        # per SKU this way. With the identifiers present on create, the repeat
+        # resolves to a match/update instead of another create.
         template = ProductTemplate.create({
             'name': (item.get('Name') or item.get('SKU') or 'Neto Product').strip(),
+            'default_code': (item.get('SKU') or '').strip() or False,
+            'barcode': _get_neto_individual_barcode(item) or False,
             'categ_id': category.id,
             'company_ids': [(4, _EDBERT_COMPANY_ID), (4, store.company_id.id)],
             'neto_parent_sku': (item.get('ParentSKU') or '').strip() or False,
@@ -1469,8 +1478,44 @@ class NetoConnector(models.AbstractModel):
         }
         self.env['neto.product.sync.log'].sudo().create(values)
 
-    def _process_product_item(self, store, item, matched_ids, sync_stock=True):
-        product, conflict = self._match_existing_product(store, item)
+    @staticmethod
+    def _seen_lookup(seen, neto_id, sku):
+        """Return a product already handled earlier in THIS run, or empty.
+
+        Neto's paged feed can return the same item on several pages of one fetch.
+        Matching against the DB alone is not enough: two occurrences can race
+        through before either is committed. This in-memory index makes a Neto id
+        (and SKU as fallback) resolve to the row we already made/matched this run,
+        so a repeat updates it instead of cloning it.
+        """
+        if not seen:
+            return False
+        if neto_id and neto_id in seen['neto']:
+            return seen['neto'][neto_id]
+        if sku and sku in seen['sku']:
+            return seen['sku'][sku]
+        return False
+
+    @staticmethod
+    def _seen_remember(seen, neto_id, sku, product):
+        if seen is None or not product:
+            return
+        if neto_id:
+            seen['neto'][neto_id] = product
+        if sku:
+            seen['sku'][sku] = product
+
+    def _process_product_item(self, store, item, matched_ids, sync_stock=True, seen=None):
+        neto_id = (item.get('ID') or item.get('InventoryID') or '').strip()
+        sku = (item.get('SKU') or '').strip()
+        product = self._seen_lookup(seen, neto_id, sku)
+        if product:
+            # A savepoint may have rolled the earlier occurrence back after we
+            # remembered it, so confirm the row still exists before reusing it.
+            product = product.exists()
+        conflict = False
+        if not product:
+            product, conflict = self._match_existing_product(store, item)
         if conflict:
             self._log_product_sync(store, item, 'conflict', reason='Ambiguous existing Odoo match')
             return False
@@ -1481,6 +1526,7 @@ class NetoConnector(models.AbstractModel):
                 product, template, store, item, category, 'updated', sync_stock=sync_stock
             )
             matched_ids.add(product.id)
+            self._seen_remember(seen, neto_id, sku, product)
             self._log_product_sync(store, item, 'updated', product=product, link=link)
             return product
         product, template = self._get_or_create_product(store, item, category)
@@ -1491,6 +1537,7 @@ class NetoConnector(models.AbstractModel):
             product, template, store, item, category, 'created', sync_stock=sync_stock
         )
         matched_ids.add(product.id)
+        self._seen_remember(seen, neto_id, sku, product)
         self._log_product_sync(store, item, 'created', product=product, link=link)
         return product
 
@@ -1613,12 +1660,15 @@ class NetoConnector(models.AbstractModel):
 
         standalones, variants = self._split_products(items)
         matched_ids = set()
+        # Per-run dedupe index (see _seen_lookup): guarantees one Neto id / SKU
+        # creates at most one product per run even if the feed repeats it.
+        seen = {'neto': {}, 'sku': {}}
         write_counter = 0
         for item in standalones + variants:
             try:
                 with self.env.cr.savepoint():
                     product = self._process_product_item(
-                        store, item, matched_ids, sync_stock=sync_stock
+                        store, item, matched_ids, sync_stock=sync_stock, seen=seen
                     )
             except Exception as exc:
                 # Savepoint rolls back the poisoned write, so the error log below
