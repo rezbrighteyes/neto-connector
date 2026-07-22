@@ -26,7 +26,6 @@ _PRODUCT_MAX_PAGES = 500
 _PRODUCT_WRITE_BATCH_SIZE = 50
 _SALEABLE_CATEGORY_ROOT = ('All', 'Saleable')
 _CATCHALL_CATEGORY_NAME = 'Neto'
-_GLE_REVIEW_TAG = 'pricing-needs-review'
 _EDBERT_COMPANY_ID = 1
 
 # Neto only returns what you ask for, and it rejects the WHOLE request with
@@ -727,13 +726,6 @@ class NetoConnector(models.AbstractModel):
             self._normalize_neto_category_path(categories)
         )
 
-    def _get_pricing_review_tag(self):
-        Tag = self.env['product.tag'].sudo()
-        tag = Tag.search([('name', '=', _GLE_REVIEW_TAG)], limit=1)
-        if not tag:
-            tag = Tag.create({'name': _GLE_REVIEW_TAG})
-        return tag
-
     def _ensure_company_on_template(self, template, company):
         commands = []
         for company_id in (_EDBERT_COMPANY_ID, company.id):
@@ -741,13 +733,6 @@ class NetoConnector(models.AbstractModel):
                 commands.append((4, company_id))
         if commands:
             template.sudo().write({'company_ids': commands})
-
-    def _set_pricing_review_tag(self, template):
-        if 'product_tag_ids' not in template._fields:
-            return
-        tag = self._get_pricing_review_tag()
-        if tag.id not in template.product_tag_ids.ids:
-            template.sudo().write({'product_tag_ids': [(4, tag.id)]})
 
     def _get_imported_price_map(self, store, item):
         PriceMap = self.env['neto.price.map'].sudo()
@@ -1462,8 +1447,6 @@ class NetoConnector(models.AbstractModel):
         self._sync_pricelist_price(pricelist, product, price_values['sale_price'])
         if sync_stock:
             self._sync_stock_quantity(store, product, item)
-        if self._is_global_store(store):
-            self._set_pricing_review_tag(template)
         return link
 
     def _log_product_sync(self, store, item, action, product=False, link=False, reason=False):
