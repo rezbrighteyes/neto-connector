@@ -482,33 +482,46 @@ class NetoConnector(models.AbstractModel):
         return items
 
     def _prepare_product_for_store_company(self, product, store):
-        """Make a matched product usable on orders for the store company."""
+        """Make a matched product usable on orders for the store company.
+
+        NEVER writes company_id. On product.template that field is a non-stored
+        compute from base_multi_company whose inverse does
+        `company_ids = [(6, 0, company_id.ids)]`, so writing False WIPES company_ids
+        (= shared with EVERY company) rather than clearing a restriction. It also
+        re-triggers _check_barcode_uniqueness, which counts ARCHIVED holders -- and
+        the old flat catalogue reuses one model-level EAN across a whole family. The
+        resulting ValidationError was swallowed and turned into `return False`, which
+        sent a SUCCESSFULLY MATCHED product down the auto-create path: one test week
+        minted 936 duplicate placeholder products this way (2026-07-29).
+
+        Only company_ids is written now, and only to ADD the store's company. A
+        failure to share is reported and the matched product is still returned --
+        an order line that raises a clear company-crossover error is recoverable;
+        a silently duplicated catalogue is not.
+        """
         if not product or not store.company_id:
             return product
 
         product = product.sudo()
         template = product.product_tmpl_id.sudo()
 
-        try:
-            with self.env.cr.savepoint():
-                if 'company_id' in product._fields and product.company_id and product.company_id != store.company_id:
-                    product.write({'company_id': False})
+        if 'company_ids' not in template._fields:
+            return product.with_company(store.company_id)
 
-                if 'company_id' in template._fields and template.company_id and template.company_id != store.company_id:
-                    template.write({'company_id': False})
-
-                if 'company_ids' in template._fields and store.company_id.id not in template.company_ids.ids:
+        # Empty company_ids means "shared with every company" -- adding one would
+        # RESTRICT the product, the opposite of the intent.
+        if template.company_ids and store.company_id.id not in template.company_ids.ids:
+            try:
+                with self.env.cr.savepoint():
                     template.write({'company_ids': [(4, store.company_id.id)]})
-        except ValidationError as exc:
-            if 'Barcode(s) already assigned' not in str(exc):
-                raise
-            _logger.warning(
-                'Neto sync: could not share matched product "%s" with company "%s" '
-                'because of an existing barcode conflict; creating an order-line placeholder instead',
-                product.display_name,
-                store.company_id.display_name,
-            )
-            return False
+            except ValidationError as exc:
+                _logger.warning(
+                    'Neto sync: could not share matched product "%s" with company '
+                    '"%s" (%s). Using the matched product anyway -- NOT creating a '
+                    'placeholder.',
+                    product.display_name, store.company_id.display_name,
+                    str(exc)[:200],
+                )
 
         return product.with_company(store.company_id)
 
