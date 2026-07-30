@@ -1144,12 +1144,20 @@ class NetoConnector(models.AbstractModel):
         if classification2 is not None:
             vals['neto_classification'] = str(classification2)
 
-        active = customer.get('Active')
-        if active is not None:
-            if isinstance(active, bool):
-                vals['active'] = active
-            else:
-                vals['active'] = str(active).strip().lower() in ('true', '1', 'yes')
+        # Neto's 'Active' flag is deliberately NOT written to res.partner.active.
+        #
+        # _sync_customer runs once per username encountered during an order sync, so
+        # writing it made ARCHIVING A CUSTOMER a silent side effect of importing an
+        # old order: measured 2026-07-30, a two-year history import would have
+        # archived 231 of 4,845 Liaise customers (real trading accounts -- IGAs,
+        # service stations, roadhouses) purely because Neto marks them inactive
+        # TODAY. It also made the outcome depend on WHEN the import happened to run.
+        #
+        # Customer status is a deliberate, reviewable decision, not an import
+        # artifact -- and with Neto being decommissioned it stops being a source of
+        # truth at all. To migrate the status once, run a dedicated audit/apply pair
+        # off scripts/audit_neto_customer_active_status.py so the change is
+        # reviewable and has a rollback list.
 
         try:
             self._neto_silent(partner.sudo()).write(vals)
