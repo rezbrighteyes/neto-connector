@@ -22,8 +22,14 @@
                     <div class="alert alert-warning" invisible="not neto_on_credit_hold">
                         &#9888;&#65039; This customer is on credit hold in Neto.
                     </div>
+                    <div class="alert alert-info" invisible="neto_status != 'inactive'">
+                        &#8505;&#65039; Neto had this customer switched OFF as at the last
+                        sync. They are still active in Odoo and can be ordered for
+                        &#8212; this records what Neto said, it is not a block.
+                    </div>
                     <group string="Neto Identity">
                         <field name="neto_username" readonly="1"/>
+                        <field name="neto_status"/>
                         <field name="neto_classification"/>
                     </group>
                     <group string="Credit (from Neto)">
@@ -39,6 +45,33 @@
                     </group>
                 </page>
             </notebook>
+        </field>
+    </record>
+
+    <!-- Filters for the Neto status. Bare filter elements at search level, NOT
+         wrapped in a group element: Odoo 19 rejects a group inside a search view
+         outright, and it collects group_by filters into the Group By menu by
+         itself. -->
+    <record id="view_res_partner_filter_neto" model="ir.ui.view">
+        <field name="name">res.partner.select.neto</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_res_partner_filter"/>
+        <field name="arch" type="xml">
+            <filter name="type_company" position="after">
+                <separator/>
+                <filter string="Inactive in Neto" name="neto_inactive"
+                        domain="[('neto_status', '=', 'inactive')]"/>
+                <filter string="Active in Neto" name="neto_active"
+                        domain="[('neto_status', '=', 'active')]"/>
+                <filter string="Never synced with Neto" name="neto_unknown"
+                        domain="[('neto_status', '=', False)]"/>
+                <separator/>
+                <filter string="On Credit Hold (Neto)" name="neto_credit_hold"
+                        domain="[('neto_on_credit_hold', '=', True)]"/>
+                <filter string="Neto Status" name="group_neto_status"
+                        context="{'group_by': 'neto_status'}"/>
+                <separator/>
+            </filter>
         </field>
     </record>
 

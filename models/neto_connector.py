@@ -1110,6 +1110,21 @@ class NetoConnector(models.AbstractModel):
             else:
                 vals['neto_on_credit_hold'] = str(on_hold).lower() in ('true', '1', 'yes')
 
+        # Record what Neto says about the customer being switched on, and NOTHING
+        # else -- this goes to neto_status, never to `active`. Mirroring it onto
+        # `active` is what archived 339 partners before 19.0.1.7.7.
+        # `Active` is already in the OutputSelector above and was being discarded.
+        # Neto sends booleans as the STRINGS "True"/"False", so bool() on it is
+        # always True; and an absent key is NOT "inactive", it is "Neto did not
+        # say", so the field is left untouched rather than set to a guess.
+        neto_active = customer.get('Active')
+        if neto_active is not None:
+            if isinstance(neto_active, bool):
+                is_active = neto_active
+            else:
+                is_active = str(neto_active).strip().lower() in ('true', '1', 'yes')
+            vals['neto_status'] = 'active' if is_active else 'inactive'
+
         invoice_terms = (customer.get('DefaultInvoiceTerms') or '').strip()
         if invoice_terms:
             terms_map = self._find_invoice_terms_map(store, invoice_terms)
